@@ -102,6 +102,11 @@ data class AppSettings(
     val callTargets: Map<String, CallTarget> = emptyMap(),
     /** The screen stays on while a voice chat is open in the chat, so it can be followed from a car holder. */
     val voiceKeepScreenOn: Boolean = true,
+    /**
+     * The voice chat plays and hears as a phone call: through the car's or the headset's call channel, so their own
+     * mute works on it, with the phone's call processing. Off, it plays like media. A GPT-Live call always is one.
+     */
+    val voiceCallAudio: Boolean = true,
     /** Talking over a reply cuts in, where the profile has it on too (`voice.barge_in`). */
     val voiceCutIn: Boolean = true,
     /**

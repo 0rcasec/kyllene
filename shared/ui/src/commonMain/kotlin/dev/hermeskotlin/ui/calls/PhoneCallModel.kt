@@ -8,6 +8,7 @@ import dev.hermeskotlin.core.phone.CallOutcome
 import dev.hermeskotlin.core.settings.AppSettings
 import dev.hermeskotlin.core.settings.SettingsStore
 import dev.hermeskotlin.core.voice.AudioApi
+import dev.hermeskotlin.core.voice.CallAudio
 import dev.hermeskotlin.core.voice.DeviceLock
 import dev.hermeskotlin.core.voice.LiveCalls
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
@@ -67,12 +68,13 @@ class PhoneCallModel(
     keepAlive: VoiceKeepAlive,
     liveCalls: LiveCalls,
     deviceLock: DeviceLock,
+    callAudio: CallAudio,
     /** A reply read aloud in the chat ends as the call takes the speaker, even one held up out of sight, or paused. */
     readAloud: ReadAloudKeepAlive,
 ) : ViewModel() {
     val voice = VoiceController(
         audio, recorder, player, viewModelScope, appScope, keepAlive,
-        liveCalls = liveCalls, deviceLock = deviceLock, readKeepAlive = readAloud,
+        liveCalls = liveCalls, deviceLock = deviceLock, callAudio = callAudio, readKeepAlive = readAloud,
     )
 
     private val _state = MutableStateFlow<PhoneCallState?>(null)
@@ -123,8 +125,8 @@ class PhoneCallModel(
             }
             // On the line: the agent hears it was answered, and the voice opens with why it called.
             call.agent?.end(CallOutcome.Answered)
-            val pause = (settings.settings.value ?: AppSettings()).voicePause
-            voice.startChat(chat.session, chat.gateway, chat.profile, pause.millis, opener = call.agent?.reason)
+            val prefs = settings.settings.value ?: AppSettings()
+            voice.startChat(chat.session, chat.gateway, chat.profile, prefs.voicePause.millis, opener = call.agent?.reason, asCall = prefs.voiceCallAudio)
             // A new chat gets its id with the first request: it's held from then on.
             if (call.storedSessionId == null) {
                 launch { relay.callChat(chat.session.state.mapNotNull { it.storedSessionId }.first()) }

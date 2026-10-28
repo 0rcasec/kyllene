@@ -704,6 +704,13 @@ internal fun SettingsView(
                     )
                     Divider()
                     SwitchRow(
+                        title = "Call audio",
+                        detail = "A voice chat talks through the car's or headset's call channel, so its mute works. Off, it plays like music.",
+                        checked = settings.voiceCallAudio,
+                        onCheckedChange = { on -> onUpdate { it.copy(voiceCallAudio = on) } },
+                    )
+                    Divider()
+                    SwitchRow(
                         title = "Cut in by talking",
                         detail = if (settings.voiceCutInGate > 0f) {
                             "Talking over a reply stops it, once it's louder than the noise line set in the voice chat's settings."

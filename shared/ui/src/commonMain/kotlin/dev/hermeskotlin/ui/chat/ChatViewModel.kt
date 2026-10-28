@@ -58,6 +58,7 @@ import dev.hermeskotlin.ui.pet.PetController
 import dev.hermeskotlin.ui.journey.JourneyController
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.LiveCalls
+import dev.hermeskotlin.core.voice.CallAudio
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.VoiceKeepAlive
 import dev.hermeskotlin.core.voice.SpeechPlayer
@@ -222,6 +223,8 @@ class ChatViewModel(
     deviceLock: DeviceLock = DeviceLock.None,
     /** The Next Prompt plugin's suggestions; none without it. */
     nextPromptApi: NextPromptApi? = null,
+    /** Plays a voice chat as a phone call, where the settings ask for it. */
+    callAudio: CallAudio = CallAudio.None,
     /** Keeps a reply read aloud playing out of sight; without it, Read aloud stops when the app goes away. */
     readAloudKeepAlive: ReadAloudKeepAlive? = null,
 ) : ViewModel(), ChatActions {
@@ -233,6 +236,7 @@ class ChatViewModel(
         deviceLock = deviceLock,
         liveCalls = liveCalls,
         readAloudVoices = readAloudVoices ?: InMemoryReadAloudVoices(),
+        callAudio = callAudio,
         readKeepAlive = readAloudKeepAlive,
     )
 
@@ -701,8 +705,8 @@ class ChatViewModel(
     fun startVoiceChat(ringback: Boolean = false) {
         val chat = session.value ?: return
         val target = target ?: return
-        val pause = (settings.settings.value ?: AppSettings()).voicePause
-        voice.startChat(chat, target.gateway.gatewayUrl, target.profile, pause.millis, ringback = ringback)
+        val prefs = settings.settings.value ?: AppSettings()
+        voice.startChat(chat, target.gateway.gatewayUrl, target.profile, prefs.voicePause.millis, ringback = ringback, asCall = prefs.voiceCallAudio)
     }
 
     /** Starts dictating into the composer, or finishes the dictation in progress. */

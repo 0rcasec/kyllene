@@ -10,6 +10,7 @@ import dev.hermeskotlin.core.sessions.SessionsApi
 import dev.hermeskotlin.core.storage.InMemoryKeyValueStore
 import dev.hermeskotlin.core.settings.DictationEngine
 import dev.hermeskotlin.core.voice.AudioApi
+import dev.hermeskotlin.core.voice.CallAudio
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
 import dev.hermeskotlin.core.voice.FocusChange
@@ -433,6 +434,61 @@ class VoiceControllerTest {
         }
 
         override fun finish() = Unit
+    }
+
+    /** Listens until cancelled. */
+    private class ListeningRecorder : VoiceRecorder {
+        val listening = CompletableDeferred<Unit>()
+        override suspend fun record(activity: VoiceActivity, onLevel: (Float) -> Unit, onSpeech: () -> Unit): Recording {
+            listening.complete(Unit)
+            awaitCancellation()
+        }
+        override fun finish() = Unit
+    }
+
+    /** Call audio that's held or not, as the chat asks. */
+    private class FakeCallAudio : CallAudio {
+        var held = 0
+        var released = 0
+        override suspend fun hold(): Boolean {
+            held++
+            return true
+        }
+
+        override fun release() {
+            released++
+        }
+    }
+
+    @Test
+    fun aVoiceChatAskedToPlaysAsACallUntilItEnds() = runTest {
+        val recorder = ListeningRecorder()
+        val calls = FakeCallAudio()
+        val voice = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope, callAudio = calls)
+
+        voice.startChat(offlineSession(), gateway, null, asCall = true)
+        // Routed before it listens.
+        recorder.listening.await()
+        assertEquals(1, calls.held)
+        assertEquals(0, calls.released)
+
+        voice.stopChat()
+        voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(1, calls.released)
+    }
+
+    @Test
+    fun aVoiceChatNotAskedToPlaysLikeMedia() = runTest {
+        val recorder = ListeningRecorder()
+        val calls = FakeCallAudio()
+        val voice = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope, callAudio = calls)
+
+        voice.startChat(offlineSession(), gateway, null)
+        recorder.listening.await()
+        voice.stopChat()
+        voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(0, calls.held)
+        assertEquals(0, calls.released)
     }
 
     /** Hears the room at [levels], frame by frame, with nobody talking, then listens on. */

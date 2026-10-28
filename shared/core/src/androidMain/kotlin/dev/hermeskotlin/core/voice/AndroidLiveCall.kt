@@ -1,9 +1,7 @@
 package dev.hermeskotlin.core.voice
 
 import android.content.Context
-import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -32,7 +30,8 @@ import kotlin.math.sqrt
  * data channel. Desktop's VoiceLiveSession, on Android.
  */
 class AndroidLiveCall(context: Context) : LiveCall {
-    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    /** A call goes to the speaker (or the headset when one is in), with the phone's call processing. */
+    private val route = CallAudioRoute(context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
     private val appContext = context.applicationContext
     private val incoming = Channel<String>(Channel.UNLIMITED)
     override val events: ReceiveChannel<String> = incoming
@@ -43,8 +42,6 @@ class AndroidLiveCall(context: Context) : LiveCall {
     private var channel: DataChannel? = null
     private var audioTrack: org.webrtc.AudioTrack? = null
     private var audioSource: org.webrtc.AudioSource? = null
-    private var previousMode = AudioManager.MODE_NORMAL
-    private var routed = false
 
     @Volatile private var closed = false
     @Volatile private var micLevel = 0f
@@ -53,7 +50,7 @@ class AndroidLiveCall(context: Context) : LiveCall {
 
     override suspend fun connect(answer: suspend (offerSdp: String) -> String) {
         initialize(appContext)
-        routeAudio()
+        route.route()
         // WebRTC's own echo canceller rather than the phone's: with the voice on the speaker, many phones'
         // cancellers go half-duplex and all but mute the microphone while it talks, so you can't cut in.
         val adm = JavaAudioDeviceModule.builder(appContext)
@@ -173,41 +170,13 @@ class AndroidLiveCall(context: Context) : LiveCall {
         adm?.release()
         channel = null
         peer = null
-        unrouteAudio()
-    }
-
-    /** A call goes to the speaker (or the headset when one is in), with the phone's call processing. */
-    @Suppress("DEPRECATION")
-    private fun routeAudio() {
-        previousMode = audioManager.mode
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        routed = true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val devices = audioManager.availableCommunicationDevices
-            val headset = devices.firstOrNull { it.type in HEADSETS }
-            (headset ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER })?.let(audioManager::setCommunicationDevice)
-        } else {
-            audioManager.isSpeakerphoneOn = !audioManager.isWiredHeadsetOn && !audioManager.isBluetoothScoOn
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun unrouteAudio() {
-        if (!routed) return
-        routed = false
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) audioManager.clearCommunicationDevice()
-        else audioManager.isSpeakerphoneOn = false
-        audioManager.mode = previousMode
+        route.unroute()
     }
 
     private companion object {
         const val ICE_GATHER_MS = 10_000L
         const val SPEAKING_LEVEL = 0.02
         const val SPEAKING_HANGOVER_MS = 400L
-        val HEADSETS = setOf(
-            AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET,
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET,
-        )
 
         @Volatile private var initialized = false
 

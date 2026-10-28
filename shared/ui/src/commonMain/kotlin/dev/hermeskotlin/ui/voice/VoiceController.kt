@@ -17,6 +17,7 @@ import dev.hermeskotlin.core.settings.DictationEngine
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.BargeIn
 import dev.hermeskotlin.core.voice.BargeInSettings
+import dev.hermeskotlin.core.voice.CallAudio
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
 import dev.hermeskotlin.core.voice.FocusChange
@@ -164,6 +165,8 @@ class VoiceController(
     private val speechStreams: SpeechStreams? = null,
     /** An approval is only taken by voice while the phone is unlocked. */
     private val deviceLock: DeviceLock = DeviceLock.None,
+    /** Plays and hears the chained chat as a phone call, where [startChat] asks for it. */
+    private val callAudio: CallAudio = CallAudio.None,
     /** Keeps a reply being read aloud going with the screen off or another app in front. */
     private val readKeepAlive: ReadAloudKeepAlive? = null,
     /** Times what Read aloud has played, for the media controls' progress bar. */
@@ -242,7 +245,8 @@ class VoiceController(
 
     /**
      * [pauseMs] is how long a quiet spell after speech has to last before it's sent. [opener]: a call the agent placed,
-     * which the voice opens by saying why.
+     * which the voice opens by saying why. [asCall]: the chained chat plays and hears as a phone call, through the car's
+     * or the headset's call channel (a GPT-Live call always does).
      */
     fun startChat(
         session: ChatSession,
@@ -251,6 +255,7 @@ class VoiceController(
         pauseMs: Long = VoiceActivity().silenceMs,
         opener: CallReason? = null,
         ringback: Boolean = false,
+        asCall: Boolean = false,
     ) {
         if (chatJob?.isActive == true) return
         cancelDictation()
@@ -290,7 +295,7 @@ class VoiceController(
             try {
                 if (startLive(session, gateway, profile, opener) { ringing?.cancelAndJoin() }) return@launch
                 ringing?.cancelAndJoin()
-                converseChained(session, gateway, profile, pauseMs, opener)
+                converseChained(session, gateway, profile, pauseMs, opener, asCall)
             } finally {
                 ringing?.cancel()
 
@@ -314,8 +319,11 @@ class VoiceController(
     }
 
     /** Desktop's chained voice chat: listen, send what you said, read the reply aloud, until it ends. */
-    private suspend fun converseChained(session: ChatSession, gateway: GatewayUrl, profile: String?, pauseMs: Long, opener: CallReason?) = coroutineScope {
-        val closeAudio = player.chainedChatAudio()
+    private suspend fun converseChained(session: ChatSession, gateway: GatewayUrl, profile: String?, pauseMs: Long, opener: CallReason?, asCall: Boolean) = coroutineScope {
+        // Before anything plays or listens: the car's call channel takes a moment to open. One owner routes a chat:
+        // the call audio where it's asked for and took, else the player's call routing on the phone's own speaker.
+        val routed = asCall && callAudio.hold()
+        val closeAudio: () -> Unit = if (routed) ({}) else player.chainedChatAudio()
         chainedAudio = closeAudio
         appScope.launch { audio.ttsLease(gateway, active = true, profile) }
         // Read while the first listen goes on; it's needed once the first reply is on its way.
@@ -357,6 +365,7 @@ class VoiceController(
             bargeIn = null
             // A newer chat may have started while this one wound down; it keeps its own.
             if (chained === running) chained = null
+            if (routed) callAudio.release()
             appScope.launch { audio.ttsLease(gateway, active = false, profile) }
             if (chainedAudio === closeAudio) chainedAudio = null
             closeAudio()

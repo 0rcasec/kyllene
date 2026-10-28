@@ -38,9 +38,12 @@ import kotlin.math.sqrt
 
 /**
  * Records 16 kHz mono PCM with [AudioRecord] and hands it over as WAV, which every speech-to-text
- * provider takes. The level is Desktop's: RMS of the waveform, scaled so 1.0 is loud speech.
+ * provider takes. The level is Desktop's: RMS of the waveform, scaled so 1.0 is loud speech. While a voice chat
+ * plays as a call ([callAudio]), it listens with the call's microphone: the car's or the headset's.
  */
 class AndroidVoiceRecorder(
+    /** The voice chat's call audio, whose microphone it listens with while one plays as a call; none, never as one. */
+    private val callAudio: AndroidCallAudio? = null,
     /** How long a microphone may send nothing before the recording fails. */
     private val noAudioMs: Long = NO_AUDIO_MS,
 ) : VoiceRecorder {
@@ -62,6 +65,7 @@ class AndroidVoiceRecorder(
             record.release()
             error("The microphone isn't available.")
         }
+        callAudio?.microphone?.let { record.preferredDevice = it }
         // Noise suppression only: automatic gain lifts the room's hum in every pause until it reads as
         // talking, and the end of speech is never found.
         val effects = listOfNotNull(
@@ -139,6 +143,7 @@ class AndroidVoiceRecorder(
                 record.release()
                 return@withContext null
             }
+            callAudio?.microphone?.let { record.preferredDevice = it }
             val effects = ArrayList<AudioEffect>(2)
             val frame = ShortArray(FRAME_SAMPLES)
             val preRoll = ArrayDeque<ByteArray>()
@@ -256,9 +261,10 @@ class AndroidVoiceRecorder(
 
 /**
  * Plays each reply clip from a cache file with [MediaPlayer], and streamed speech straight into an
- * [AudioTrack] as it arrives, as assistant audio outside a chained voice chat.
+ * [AudioTrack] as it arrives, as assistant audio, or as a call's while a voice chat plays as one ([callAudio], or
+ * the phone speaker's call routing for a chained chat).
  */
-class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
+class AndroidSpeechPlayer(private val context: Context, private val callAudio: AndroidCallAudio) : SpeechPlayer {
     override suspend fun playRingback() {
         val bytes = withContext(Dispatchers.IO) { context.assets.open("call_ringback.wav").use { it.readBytes() } }
         play(SpokenAudio(bytes, "audio/wav"))
@@ -372,7 +378,7 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(speechUsage())
+                    .setUsage(usage())
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -477,7 +483,7 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
             suspendCancellableCoroutine { continuation ->
                 player.setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(speechUsage())
+                        .setUsage(usage())
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )
@@ -511,6 +517,10 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
             file.delete()
         }
     }
+
+    /** A call's voice goes down the call channel; the assistant's would stay on the media one, the car's music. */
+    /** A call's voice while the call audio or the speaker's call routing has the chat, else an assistant's. */
+    private fun usage() = if (callAudio.on) AudioAttributes.USAGE_VOICE_COMMUNICATION else speechUsage()
 
     private companion object {
         const val POLL_MS = 50L
