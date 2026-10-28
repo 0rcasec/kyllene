@@ -317,6 +317,7 @@ import dev.hermeskotlin.core.voice.readAloudText
 import dev.hermeskotlin.core.voice.speakableText
 import androidx.compose.runtime.saveable.rememberSaveable
 import dev.hermeskotlin.ui.voice.rememberMicrophonePermission
+import dev.hermeskotlin.ui.voice.screenStaysOn
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.composables.icons.lucide.AudioLines
@@ -840,7 +841,7 @@ internal fun ChatView(
         LaunchedEffect(voiceOn) { if (!voiceOn) voiceFolded = false }
         // A reply read aloud plays to its end with the phone put down, and stops if it leaves the chat
         // (regenerated, or a reload that keys it anew), so its Stop is never gone while it plays.
-        KeepScreenOn(readAloud.key != null)
+        KeepScreenOn(screenStaysOn(voiceChat, readAloud, LocalAppSettings.current))
         // A chat whose transcript hasn't loaded yet hasn't lost it.
         LaunchedEffect(readAloud.key, state.messages, state.historyLoaded) {
             val key = readAloud.key ?: return@LaunchedEffect

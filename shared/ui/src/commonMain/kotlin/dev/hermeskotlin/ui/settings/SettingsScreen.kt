@@ -695,6 +695,13 @@ internal fun SettingsView(
                             optionLabel = { pauseLabels.getValue(it) },
                         )
                     }
+                    Divider()
+                    SwitchRow(
+                        title = "Keep the screen on",
+                        detail = "During a voice chat, so you can follow it with the phone in a holder.",
+                        checked = settings.voiceKeepScreenOn,
+                        onCheckedChange = { on -> onUpdate { it.copy(voiceKeepScreenOn = on) } },
+                    )
                 }
 
                 if (isDesktop) Section(stringResource(Res.string.settings_section_desktop)) {
