@@ -57,6 +57,19 @@ class ConfigCatalogTest {
     }
 
     @Test
+    fun voiceHasTheCutInSettings() {
+        // As the gateway's defaults fill them in.
+        val values = config("""{"voice":{"barge_in":true,"barge_in_threshold_multiplier":3.0,"barge_in_grace_seconds":0.5}}""")
+
+        val entries = ConfigCatalog.entries(section("voice"), schema, values).associateBy { it.key }
+
+        assertEquals(ConfigControl.Toggle, entries.getValue("voice.barge_in").control)
+        assertEquals("Cut-in sensitivity", entries.getValue("voice.barge_in_threshold_multiplier").label)
+        assertEquals(ConfigControl.Number, entries.getValue("voice.barge_in_threshold_multiplier").control)
+        assertEquals(ConfigControl.Number, entries.getValue("voice.barge_in_grace_seconds").control)
+    }
+
+    @Test
     fun aDescriptionThatOnlyRepeatsTheKeyIsLeftOut() {
         val values = config("""{"agent":{"max_turns":90}}""")
 
