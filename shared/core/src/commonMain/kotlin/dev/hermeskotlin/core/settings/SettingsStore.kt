@@ -102,6 +102,13 @@ data class AppSettings(
     val callTargets: Map<String, CallTarget> = emptyMap(),
     /** The screen stays on while a voice chat is open in the chat, so it can be followed from a car holder. */
     val voiceKeepScreenOn: Boolean = true,
+    /** Talking over a reply cuts in, where the profile has it on too (`voice.barge_in`). */
+    val voiceCutIn: Boolean = true,
+    /**
+     * The least level that can cut in on this phone, whatever the profile's sensitivity makes of the room
+     * (`BargeInSettings.gate`), set from the voice chat's noise meter; 0 for none.
+     */
+    val voiceCutInGate: Float = 0f,
     /** The mic for dictation in the composer and on an empty chat. Off, it goes, and the model name gets the room. */
     val dictation: Boolean = true,
     val dictationEngine: DictationEngine = DictationEngine.Device,

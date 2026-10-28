@@ -72,6 +72,11 @@ class PhoneCallModel(
     private val _state = MutableStateFlow<PhoneCallState?>(null)
     val state: StateFlow<PhoneCallState?> = _state.asStateFlow()
 
+    init {
+        // Cutting in as the chat's voice chat does, gate and all.
+        voice.follow(settings.settings)
+    }
+
     /** Picked up, while the phone unlocks and the microphone is allowed: kept here, so a rotation meanwhile keeps it. */
     var pickingUp: PickedUpCall? = null
         private set

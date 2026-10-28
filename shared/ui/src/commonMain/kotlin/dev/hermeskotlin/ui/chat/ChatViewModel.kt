@@ -363,6 +363,8 @@ class ChatViewModel(
         }
         // Off the gateway the chat hears of no new turns, while the lists may read them on reconnecting first.
         viewModelScope.launch { connectionState.collect { if (it !is ConnectionState.Connected) releaseCaughtUp() } }
+        // This phone's voice settings, as they change.
+        voice.follow(settings.settings)
         // A chat opened under the checkpoints sheet shows its own checkpoints, not the last chat's.
         viewModelScope.launch { session.collect { checkpoints.follow(it) } }
         viewModelScope.launch { session.collect { control.follow(it) } }
@@ -1431,6 +1433,15 @@ class ChatViewModel(
     override fun stopVoiceChat() = voice.stopChat()
 
     override fun toggleVoiceMute() = voice.toggleMute()
+
+    override fun setVoiceCutIn(on: Boolean) = settings.update { it.copy(voiceCutIn = on) }
+
+    override fun setVoiceGate(gate: Float) = settings.update { it.copy(voiceCutInGate = gate) }
+
+    override fun setVoiceGateFromNoise() {
+        val gate = voice.gateFromNoise() ?: return
+        settings.update { it.copy(voiceCutInGate = gate) }
+    }
 
     override fun dismissVoiceChatError() = voice.dismissChatError()
 

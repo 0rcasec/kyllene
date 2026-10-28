@@ -702,6 +702,17 @@ internal fun SettingsView(
                         checked = settings.voiceKeepScreenOn,
                         onCheckedChange = { on -> onUpdate { it.copy(voiceKeepScreenOn = on) } },
                     )
+                    Divider()
+                    SwitchRow(
+                        title = "Cut in by talking",
+                        detail = if (settings.voiceCutInGate > 0f) {
+                            "Talking over a reply stops it, once it's louder than the noise line set in the voice chat's settings."
+                        } else {
+                            "Talking over a reply stops it. In a car, set a noise line from the voice chat's settings."
+                        },
+                        checked = settings.voiceCutIn,
+                        onCheckedChange = { on -> onUpdate { it.copy(voiceCutIn = on) } },
+                    )
                 }
 
                 if (isDesktop) Section(stringResource(Res.string.settings_section_desktop)) {

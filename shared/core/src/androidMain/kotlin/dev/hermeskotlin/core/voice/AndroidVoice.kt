@@ -119,6 +119,7 @@ class AndroidVoiceRecorder(
         onTrip: () -> Unit,
         onLevel: (Float) -> Unit,
         onListening: () -> Unit,
+        onMeter: (Float) -> Unit,
     ): Recording? =
         withContext(Dispatchers.IO) {
             finishRequested = false
@@ -164,6 +165,7 @@ class AndroidVoiceRecorder(
                     }
                     elapsed += FRAME_MS
                     val level = min(1.0, sqrt(sum / frame.size) / 256.0 / 42.0).toFloat()
+                    onMeter(level)
                     if (tripped) {
                         pcm.write(bytes.array())
                         onLevel(level)

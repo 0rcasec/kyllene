@@ -128,6 +128,15 @@ interface ChatActions {
     /** Turns the microphone off or on in a GPT-Live call. */
     fun toggleVoiceMute() {}
 
+    /** Talking over a reply cuts in on this phone, or doesn't. */
+    fun setVoiceCutIn(on: Boolean) {}
+
+    /** The least level that can cut in on this phone, from the noise meter; 0 for none. */
+    fun setVoiceGate(gate: Float) {}
+
+    /** Sets the gate just over the noise the voice chat has heard lately; nothing until it has heard enough. */
+    fun setVoiceGateFromNoise() {}
+
     fun dismissVoiceChatError()
 
     fun dismissDictationError()

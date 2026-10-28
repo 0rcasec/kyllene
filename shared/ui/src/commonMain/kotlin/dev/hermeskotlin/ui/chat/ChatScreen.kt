@@ -71,6 +71,7 @@ import dev.hermeskotlin.core.chat.linkFileUris
 import dev.hermeskotlin.core.media.GatewayFile
 import dev.hermeskotlin.core.media.LinkPreview
 import dev.hermeskotlin.designsystem.components.LocalFileLinks
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.abs
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -308,7 +309,9 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import dev.hermeskotlin.ui.pet.rememberPetState
 import dev.hermeskotlin.ui.voice.DictationState
 import dev.hermeskotlin.ui.voice.ReadAloudState
+import dev.hermeskotlin.ui.voice.NoVoiceMeter
 import dev.hermeskotlin.ui.voice.VoiceChatState
+import dev.hermeskotlin.ui.voice.VoiceMeter
 import dev.hermeskotlin.ui.voice.VoicePanel
 import dev.hermeskotlin.ui.voice.VoicePhase
 import dev.hermeskotlin.ui.voice.VoiceScreen
@@ -590,6 +593,8 @@ fun ChatScreen(
         attachmentError = attachmentError,
         comments = viewModel.comments.collectAsStateWithLifecycle().value,
         voiceChat = viewModel.voice.chat.collectAsStateWithLifecycle().value,
+        // Collected by the meter alone: it moves every frame.
+        voiceMeter = viewModel.voice.meter,
         dictation = viewModel.voice.dictation.collectAsStateWithLifecycle().value,
         readAloud = viewModel.voice.reading.collectAsStateWithLifecycle().value,
         suggestions = viewModel.suggestions.collectAsStateWithLifecycle().value,
@@ -760,6 +765,8 @@ internal fun ChatView(
     /** Comments on parts of the chat, waiting for the next send. */
     comments: List<PendingComment> = emptyList(),
     voiceChat: VoiceChatState,
+    /** The voice chat's microphone frame by frame, for the noise meter. */
+    voiceMeter: StateFlow<VoiceMeter> = NoVoiceMeter,
     dictation: DictationState,
     /** The reply being read aloud, and why the last one couldn't be. */
     readAloud: ReadAloudState = ReadAloudState(),
@@ -1254,6 +1261,10 @@ internal fun ChatView(
                     actions.stopVoiceChat()
                 },
                 onSendNow = actions::sendVoiceNow,
+                meter = voiceMeter,
+                onCutIn = actions::setVoiceCutIn,
+                onGate = actions::setVoiceGate,
+                onGateFromNoise = actions::setVoiceGateFromNoise,
             )
         }
         // Files dragged over the chat: it says where they go before they're let go, as a desktop app does.

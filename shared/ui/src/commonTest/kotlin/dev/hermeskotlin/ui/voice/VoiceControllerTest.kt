@@ -423,6 +423,47 @@ class VoiceControllerTest {
         override fun finish() = Unit
     }
 
+    /** Hears the room at [levels], frame by frame, with nobody talking, then listens on. */
+    private class RoomRecorder(private val levels: List<Float>) : VoiceRecorder {
+        val heardRoom = CompletableDeferred<Unit>()
+        override suspend fun record(activity: VoiceActivity, onLevel: (Float) -> Unit, onSpeech: () -> Unit): Recording {
+            levels.forEach(onLevel)
+            heardRoom.complete(Unit)
+            awaitCancellation()
+        }
+
+        override fun finish() = Unit
+    }
+
+    @Test
+    fun theGateIsSetJustOverTheRoomsLoudMoments() = runTest {
+        // Road noise around 0.1, louder now and then.
+        val recorder = RoomRecorder(List(100) { if (it % 10 == 0) 0.2f else 0.1f })
+        val voice = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope)
+        assertNull(voice.gateFromNoise())
+
+        voice.startChat(offlineSession(), gateway, null)
+        recorder.heardRoom.await()
+
+        assertTrue(voice.meter.value.roomHeard)
+        // Half as much again as its loud moments, not its average.
+        assertEquals(0.3f, voice.gateFromNoise()!!, 1e-4f)
+        voice.stopChat()
+    }
+
+    @Test
+    fun aMomentOfTheRoomIsntEnoughToSetTheGate() = runTest {
+        val recorder = RoomRecorder(List(20) { 0.1f })
+        val voice = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope)
+
+        voice.startChat(offlineSession(), gateway, null)
+        recorder.heardRoom.await()
+
+        assertTrue(!voice.meter.value.roomHeard)
+        assertNull(voice.gateFromNoise())
+        voice.stopChat()
+    }
+
     /** A chat that never connects: these voice chats end before anything is sent. */
     private fun TestScope.offlineSession(): ChatSession {
         val cookies = PersistentCookiesStorage(InMemoryKeyValueStore())

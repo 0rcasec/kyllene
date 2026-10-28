@@ -137,13 +137,18 @@ class StreamedSpeechTest {
 
         override fun finish() = Unit
 
+        /** The detector the last listen was given. */
+        var bargeIn: BargeIn? = null
+
         override suspend fun listenOver(
             bargeIn: BargeIn,
             playing: () -> Boolean,
             onTrip: () -> Unit,
             onLevel: (Float) -> Unit,
             onListening: () -> Unit,
+            onMeter: (Float) -> Unit,
         ): Recording? {
+            this.bargeIn = bargeIn
             listening.update { it + 1 }
             onListening()
             if (heardCut) awaitCancellation()
@@ -359,6 +364,28 @@ class StreamedSpeechTest {
         assertTrue(setup.spoken.isEmpty())
         // And the microphone listens over the next reply too.
         recorder.listening.first { it >= 2 }
+        setup.voice.stopChat()
+    }
+
+    @Test
+    fun thisPhonesGateHoldsTheListenOverTheVoiceAndOffShutsItOut() = runTest {
+        val recorder = CutsIn()
+        val stream = Stream()
+        val setup = chat(recorder = recorder) { stream }
+        setup.voice.setCutIn(true, 0.4f)
+
+        setup.socket.event("message.start")
+        setup.socket.event("message.delta", """{"text":"It was a long day. "}""")
+        stream.appended.first { it.isNotEmpty() }
+        stream.gateway.send(SpeechStreamEvent.Start(sampleRate = 24_000))
+        stream.gateway.send(SpeechStreamEvent.Audio(byteArrayOf(1, 0, 2, 0)))
+        recorder.listening.first { it >= 1 }
+        // Set before the listen or during it, the gate is the detector's.
+        assertEquals(0.4f, recorder.bargeIn!!.gate)
+
+        // Off mid-reply: nothing said reaches the bar from here on.
+        setup.voice.setCutIn(false, 0.4f)
+        assertEquals(Float.MAX_VALUE, recorder.bargeIn!!.gate)
         setup.voice.stopChat()
     }
 

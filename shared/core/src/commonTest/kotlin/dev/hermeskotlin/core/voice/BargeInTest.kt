@@ -36,6 +36,51 @@ class BargeInTest {
         assertTrue(at - 1_000 in 240L..340L, "tripped ${at - 1_000} ms in")
     }
 
+    /** A car: a quiet floor, and road noise that comes and goes (a rough surface, a bridge) well over it. */
+    @Test
+    fun roadNoiseOverTheCeilingCutsInWithoutAGate() {
+        val mic = Mic()
+        assertNull(mic.feed(0.08f, 1_000))
+        assertNull(mic.feed(0.08f, 1_000, playing = true))
+        // Capped where speech can reach it, the bar is where the noise reaches it too.
+        assertNotNull(mic.feed(0.35f, 600, playing = true))
+    }
+
+    @Test
+    fun theGateKeepsRoadNoiseFromCuttingIn() {
+        val mic = Mic(BargeIn(BargeInSettings(gate = 0.5f)))
+        assertNull(mic.feed(0.08f, 1_000))
+        assertNull(mic.feed(0.08f, 1_000, playing = true))
+        assertNull(mic.feed(0.35f, 2_000, playing = true))
+        // Nor while the agent works, with nothing playing.
+        assertNull(mic.feed(0.35f, 2_000))
+        assertEquals(0.5f, mic.bargeIn.trigger(playing = true))
+        assertEquals(0.5f, mic.bargeIn.trigger(playing = false))
+        // Speech over the gate still cuts in.
+        assertEquals(BargeIn.Step.Tripped, assertNotNull(mic.feed(0.7f, 1_000, playing = true)).second)
+    }
+
+    @Test
+    fun noiseUnderTheGateIsntSomeoneGoingOnTalking() {
+        val mic = Mic(BargeIn(BargeInSettings(gate = 0.5f)))
+        assertNull(mic.feed(0.08f, 1_000))
+        assertEquals(BargeIn.Step.Tripped, assertNotNull(mic.feed(0.7f, 1_000, playing = true)).second)
+        // The voice held, and only the road goes on: nobody spoke, and it's over soon rather than after a pause.
+        val (_, step) = assertNotNull(mic.feed(0.35f, 2_000))
+        assertEquals(BargeIn.Step.Done, step)
+        assertFalse(mic.bargeIn.spoke)
+    }
+
+    @Test
+    fun theGateCanBeMovedWhileItListens() {
+        val mic = Mic()
+        assertNull(mic.feed(0.08f, 1_000))
+        mic.bargeIn.gate = 0.5f
+        assertNull(mic.feed(0.35f, 2_000))
+        mic.bargeIn.gate = 0f
+        assertNotNull(mic.feed(0.35f, 1_000))
+    }
+
     @Test
     fun aBlipDoesNotCutIn() {
         val mic = Mic()

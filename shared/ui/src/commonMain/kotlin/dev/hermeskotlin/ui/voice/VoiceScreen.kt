@@ -46,7 +46,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -81,6 +84,7 @@ import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Mic
 import com.composables.icons.lucide.MicOff
 import com.composables.icons.lucide.SkipForward
+import com.composables.icons.lucide.SlidersHorizontal
 import com.composables.icons.lucide.X
 import com.composeunstyled.Text
 import com.composeunstyled.UnstyledIcon
@@ -107,10 +111,12 @@ import dev.hermeskotlin.designsystem.textMuted
 import dev.hermeskotlin.designsystem.textSecondary
 import dev.hermeskotlin.designsystem.textTertiary
 import dev.hermeskotlin.designsystem.typography
+import dev.hermeskotlin.ui.LocalAppSettings
 import dev.hermeskotlin.ui.PlatformBackHandler
 import dev.hermeskotlin.ui.chat.LocalReplySpeaker
 import dev.hermeskotlin.ui.resources.*
 import org.jetbrains.compose.resources.stringResource
+import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -137,8 +143,16 @@ internal fun VoiceScreen(
     onType: () -> Unit,
     /** Sends what's been heard without waiting for the pause. */
     onSendNow: () -> Unit = {},
+    /** The microphone frame by frame, for the noise meter in the voice settings. */
+    meter: StateFlow<VoiceMeter> = NoVoiceMeter,
+    onCutIn: (Boolean) -> Unit = {},
+    onGate: (Float) -> Unit = {},
+    onGateFromNoise: () -> Unit = {},
 ) {
     PlatformBackHandler(enabled = active, onBack = onMinimize)
+    // The chained chat's own: a live call's voice model decides when it's been cut in on.
+    var tuning by rememberSaveable { mutableStateOf(false) }
+    val tunable = !state.live && state.phase != VoicePhase.Connecting
     val glow = Theme[colors][accent].copy(alpha = 0.22f)
     BoxWithConstraints(
         Modifier
@@ -167,11 +181,27 @@ internal fun VoiceScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RingButton(Lucide.ChevronDown, stringResource(Res.string.voice_show_chat), onMinimize)
+                // Keeps the title centred over the two buttons on the other side.
+                if (tunable) Spacer(Modifier.size(MinTouchTarget))
                 Column(Modifier.weight(1f).semantics(mergeDescendants = true) { heading() }, horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(stringResource(Res.string.voice_chat), style = Theme[typography][body].copy(fontSize = 14.sp, lineHeight = 18.sp), fontWeight = FontWeight.SemiBold, color = Theme[colors][textColor], maxLines = 1)
                     Text(chatTitle, style = Theme[typography][caption].copy(fontSize = 12.sp, lineHeight = 16.sp), color = Theme[colors][textTertiary], maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                if (tunable) RingButton(Lucide.SlidersHorizontal, if (tuning) "Hide voice settings" else "Voice settings", { tuning = !tuning })
                 RingButton(if (captions) Lucide.Captions else Lucide.CaptionsOff, stringResource(if (captions) Res.string.voice_hide_captions else Res.string.voice_show_captions), onToggleCaptions)
+            }
+            AnimatedVisibility(tuning && tunable, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                val settings = LocalAppSettings.current
+                VoiceTuning(
+                    state,
+                    meter,
+                    cutIn = settings.voiceCutIn,
+                    gate = settings.voiceCutInGate,
+                    onCutIn = onCutIn,
+                    onGate = onGate,
+                    onGateFromNoise = onGateFromNoise,
+                    modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                )
             }
             Transcript(
                 state,

@@ -6,12 +6,15 @@ import kotlin.math.min
 /**
  * Talking over a reply to cut in (the profile's `voice.barge_in`, on unless it's set off). [multiplier] is
  * `voice.barge_in_threshold_multiplier`, the sensitivity: lower trips sooner; null keeps the stock levels.
- * [graceMs] is `voice.barge_in_grace_seconds`, how long the voice's first sound can't trip it.
+ * [graceMs] is `voice.barge_in_grace_seconds`, how long the voice's first sound can't trip it. [gate] is this
+ * phone's own, not the profile's: the least level that can cut in, whatever the room's floor and the ceilings make of
+ * the bar, so a car's road noise stays under it; 0 sets none.
  */
 data class BargeInSettings(
     val enabled: Boolean = true,
     val multiplier: Double? = null,
     val graceMs: Long = DEFAULT_GRACE_MS,
+    val gate: Float = 0f,
 ) {
     companion object {
         const val DEFAULT_GRACE_MS = 500L
@@ -42,6 +45,10 @@ data class BargeInSettings(
  *
  * The levels are the recorder's (RMS scaled so 1.0 is loud speech). They sit below Desktop's: the phone's
  * call microphone is quieter than a browser's, and its echo cancelling takes most of the voice out already.
+ *
+ * The bar never goes under [gate], however the floor and the ceilings set it: the ceilings keep speech in reach over
+ * a loud echo, but they also put the bar where a car's road noise reaches it, and the floor can't help with noise that
+ * comes and goes. Under the gate, nothing counts as someone talking, and a pause ends what they said.
  */
 class BargeIn(
     private val settings: BargeInSettings = BargeInSettings(),
@@ -54,6 +61,9 @@ class BargeIn(
     private val playbackMin = (PLAYBACK_MIN_LEVEL * scale).toFloat()
     // A lower sensitivity setting still keeps the bar over the voice's own echo.
     private val bleedMultiplier = max(BLEED_MULTIPLIER * scale, MIN_BLEED_MARGIN).toFloat()
+
+    /** The least level that can cut in ([BargeInSettings.gate]); it can be moved while it listens. */
+    @kotlin.concurrent.Volatile var gate: Float = settings.gate
 
     var tripped = false
         private set
@@ -110,8 +120,9 @@ class BargeIn(
         if (playing) lastPlayingAt = nowMs
 
         val trigger = trigger(playing)
-        // The room drifts; follow it while it's quiet.
-        if (floorLocked && !playing && level < trigger) addFloor(level)
+        // The room drifts; follow it while it's quiet. Not on what only the gate keeps under the bar: road noise that
+        // came and went would lift the floor, and the bar with it, out of speech's reach.
+        if (floorLocked && !playing && level < quietBar()) addFloor(level)
         // How loud the voice comes back through the microphone, which echo cancelling may or may not have taken out.
         // Learnt from all of its first moment (nothing can trip it then), and after that from what stays under the bar.
         // Not from a frame well over the echo learnt so far, nor while anything stood over the bar: that's someone
@@ -142,11 +153,11 @@ class BargeIn(
         return Step.Waiting
     }
 
-    /** The bar speech has to clear now. */
-    internal fun trigger(playing: Boolean): Float {
-        if (!playing) return quietBar()
+    /** The bar speech has to clear now, with the voice [playing] or not. */
+    fun trigger(playing: Boolean): Float {
+        if (!playing) return max(quietBar(), gate)
         // Over the voice: above its own echo, so speech has to stand clearly over it; but never out of speech's reach.
-        return max(playingBar(), min(bleed * bleedMultiplier, ECHO_BAR_CEILING_LEVEL))
+        return maxOf(playingBar(), min(bleed * bleedMultiplier, ECHO_BAR_CEILING_LEVEL), gate)
     }
 
     private fun quietBar() = max(MIN_TRIGGER_LEVEL, floor * floorMultiplier)
@@ -171,8 +182,8 @@ class BargeIn(
      * could have cut in over the voice: the room's hum isn't them.
      */
     private fun endpoint(level: Float, nowMs: Long): Step {
-        if (nowMs - trippedAt >= HOLD_SETTLE_MS && level >= playingBar() && ++spokeFrames >= SPOKE_FRAMES) spoke = true
-        if (level >= max(MIN_TRIGGER_LEVEL * QUIET_FRACTION, floor * QUIET_OVER_FLOOR)) quietSince = -1
+        if (nowMs - trippedAt >= HOLD_SETTLE_MS && level >= max(playingBar(), gate) && ++spokeFrames >= SPOKE_FRAMES) spoke = true
+        if (level >= maxOf(MIN_TRIGGER_LEVEL * QUIET_FRACTION, floor * QUIET_OVER_FLOOR, gate * QUIET_FRACTION)) quietSince = -1
         else if (quietSince < 0) quietSince = nowMs
         // Nobody went on once the voice held: it was the phone hearing itself, or a knock.
         if (!spoke && nowMs - trippedAt >= NOBODY_AFTER_MS) return Step.Done

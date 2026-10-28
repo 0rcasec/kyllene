@@ -12,6 +12,7 @@ import dev.hermeskotlin.core.network.errorMessage
 import dev.hermeskotlin.core.phone.CallReason
 import dev.hermeskotlin.core.phone.liveOpener
 import dev.hermeskotlin.core.phone.spokenOpener
+import dev.hermeskotlin.core.settings.AppSettings
 import dev.hermeskotlin.core.settings.DictationEngine
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.BargeIn
@@ -62,6 +63,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.takeWhile
@@ -96,6 +99,19 @@ data class VoiceChatState(
     /** Talking over the reply cuts in (the profile's `voice.barge_in`). */
     val bargeIn: Boolean = false,
 )
+
+/** The microphone in the voice chat, frame by frame, for the noise meter. */
+data class VoiceMeter(
+    /** The level now, 0..1, as the recorder measures it: 1.0 is loud speech. */
+    val level: Float = 0f,
+    /** What someone cutting in has to clear now; null while nothing listens for it. */
+    val bar: Float? = null,
+    /** Enough of the room has been heard, with nobody talking and nothing playing, to set the gate from it. */
+    val roomHeard: Boolean = false,
+)
+
+/** No voice chat: a meter that never moves. */
+val NoVoiceMeter: StateFlow<VoiceMeter> = MutableStateFlow(VoiceMeter())
 
 data class DictationState(
     val recording: Boolean = false,
@@ -153,6 +169,17 @@ class VoiceController(
     private val _reading = MutableStateFlow(ReadAloudState())
     val reading: StateFlow<ReadAloudState> = _reading.asStateFlow()
 
+    private val _meter = MutableStateFlow(VoiceMeter())
+    val meter: StateFlow<VoiceMeter> = _meter.asStateFlow()
+
+    /** The room's level lately, frame by frame, with nobody talking and nothing playing: for [gateFromNoise]. */
+    private val room = RoomNoise(ROOM_FRAMES)
+    /** This phone's say on cutting in ([setCutIn]): at all, and the least level that can. */
+    @kotlin.concurrent.Volatile private var cutIn = true
+    @kotlin.concurrent.Volatile private var gate = 0f
+    /** The detector listening over the voice now, so a gate moved meanwhile applies at once. */
+    @kotlin.concurrent.Volatile private var detector: BargeIn? = null
+
     private var chatJob: Job? = null
     private var stoppedByUser = false
     private var speechJob: Job? = null
@@ -208,6 +235,7 @@ class VoiceController(
         stopReading()
         // Connecting while it checks for a live call: nothing listens yet, so Mute isn't offered until it does.
         _chat.value = VoiceChatState(VoicePhase.Connecting)
+        room.clear()
         stoppedByUser = false
         roomFloor = 0f
         noSpeechStream = null
@@ -370,6 +398,41 @@ class VoiceController(
         chainedAudio?.let { chainedAudio = null; it() }
     }
 
+    /**
+     * This phone's own say on cutting in, beside the profile's: [on] or not at all, and the least level that can
+     * ([gate], 0 for none; see [BargeInSettings.gate]). It applies at once, to a listen already going too.
+     */
+    fun setCutIn(on: Boolean, gate: Float) {
+        cutIn = on
+        this.gate = gate
+        detector?.gate = if (on) gate else Float.MAX_VALUE
+    }
+
+    /** Follows this phone's voice settings as they change: cutting in and its gate ([setCutIn]). */
+    fun follow(settings: Flow<AppSettings?>) {
+        val prefs = settings.filterNotNull()
+        // The noise meter moves the gate mid-reply.
+        scope.launch { prefs.map { it.voiceCutIn to it.voiceCutInGate }.distinctUntilChanged().collect { (on, gate) -> setCutIn(on, gate) } }
+    }
+
+    /**
+     * A gate just over the room's noise as it's been heard lately: its loud moments, not its average, since those are
+     * what cut in. Null until enough of it has been heard with nobody talking and nothing playing.
+     */
+    fun gateFromNoise(): Float? {
+        val heard = room.levels().takeIf { it.size >= ROOM_ENOUGH_FRAMES }?.apply { sort() } ?: return null
+        val loud = heard[(heard.size * ROOM_LOUD_PERCENTILE).toInt().coerceAtMost(heard.lastIndex)]
+        return (loud * GATE_HEADROOM).coerceIn(MIN_GATE, MAX_GATE)
+    }
+
+    /** One frame of the microphone for the meter; [quiet] when nobody talks and nothing plays, so it's the room's. */
+    private fun meter(level: Float, bar: Float?, quiet: Boolean) {
+        val muted = _chat.value.muted
+        // A muted microphone hears nothing of the room either.
+        if (quiet && !muted) room.add(level)
+        _meter.value = VoiceMeter(level, bar, roomHeard = room.size >= ROOM_ENOUGH_FRAMES)
+    }
+
     /** Cuts the reply being read aloud and listens again. */
     fun skipSpeech() {
         speechJob?.cancel()
@@ -505,11 +568,12 @@ class VoiceController(
      */
     private suspend fun listenOver(activity: VoiceActivity, tripped: CompletableDeferred<Unit>): Recording? {
         val settings = bargeIn?.await() ?: return null
-        if (!settings.enabled || cantListenOver) return null
+        if (!settings.enabled || !cutIn || cantListenOver) return null
         while (true) {
             // Muted: the microphone stays shut over the reply too, and listens again once unmuted.
             _chat.first { !it.muted }
-            val detector = BargeIn(settings, activity.silenceMs, roomFloor)
+            val detector = BargeIn(settings.copy(gate = gate), activity.silenceMs, roomFloor)
+            this.detector = detector
             var cut = false
             val heard = try {
                 unlessMuted({ cut = true; null }) {
@@ -520,6 +584,11 @@ class VoiceController(
                         onListening = { _chat.update { it.copy(bargeIn = true) } },
                         onTrip = { tripped.complete(Unit) },
                         onLevel = { level -> _chat.update { if (it.phase == VoicePhase.Listening) it.copy(level = level) else it } },
+                        // On the recorder's thread, before the frame goes to the detector: the bar it's about to be held to.
+                        onMeter = { level ->
+                            val off = !cutIn
+                            meter(level, detector.trigger(playing.value).takeUnless { off }, quiet = !playing.value && !detector.tripped)
+                        },
                     )
                 }
             } catch (e: CancellationException) {
@@ -527,6 +596,8 @@ class VoiceController(
             } catch (_: Exception) {
                 null
             } finally {
+                this.detector = null
+                _meter.update { VoiceMeter(roomHeard = it.roomHeard) }
                 if (detector.roomFloor > 0f) roomFloor = detector.roomFloor
                 // Not offered once the microphone is closed again, as while a question is asked aloud.
                 _chat.update { it.copy(bargeIn = false) }
@@ -696,7 +767,11 @@ class VoiceController(
                 unlessMuted({ null }) {
                     recorder.record(
                         activity,
-                        onLevel = { level -> _chat.update { it.copy(level = level) } },
+                        onLevel = { level ->
+                            _chat.update { it.copy(level = level) }
+                            // Before speech, what it hears is the room.
+                            meter(level, bar = null, quiet = !_chat.value.hearing)
+                        },
                         onSpeech = { _chat.update { it.copy(hearing = true) } },
                     )
                 }
@@ -1169,6 +1244,15 @@ class VoiceController(
         const val DICTATION_SILENCE_MS = 3_000L
         const val DICTATION_IDLE_MS = 15_000L
         const val DICTATION_MAX_MS = 120_000L
+        /** Three seconds of the room, in the recorder's 20 ms frames. */
+        const val ROOM_FRAMES = 150
+        /** A second and a half of it is enough to tell. */
+        const val ROOM_ENOUGH_FRAMES = 75
+        const val ROOM_LOUD_PERCENTILE = 0.95f
+        /** How far over the room's loud moments the gate goes, so the noise doesn't reach it but a raised voice does. */
+        const val GATE_HEADROOM = 1.5f
+        const val MIN_GATE = 0.03f
+        const val MAX_GATE = 0.9f
     }
 }
 
@@ -1335,3 +1419,29 @@ private val SPACES = Regex("""\s{2,}""")
 private const val LINE_MAX = 2_000
 private const val BRIEF_MAX = 200
 private const val VOICE_FAILED = "The voice service failed."
+
+/**
+ * The last [capacity] levels heard, oldest first once full. Written frame by frame on the recorder's thread and read
+ * on a tap: a frame landing while it's read only moves the result by that frame.
+ */
+private class RoomNoise(private val capacity: Int) {
+    private val levels = FloatArray(capacity)
+    private var next = 0
+
+    @kotlin.concurrent.Volatile var size = 0
+        private set
+
+    fun add(level: Float) {
+        levels[next] = level
+        next = (next + 1) % capacity
+        if (size < capacity) size++
+    }
+
+    fun clear() {
+        next = 0
+        size = 0
+    }
+
+    /** A copy of what's held, in no particular order. */
+    fun levels(): FloatArray = levels.copyOf(size)
+}
