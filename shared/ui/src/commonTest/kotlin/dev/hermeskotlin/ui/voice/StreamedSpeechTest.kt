@@ -31,13 +31,16 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
@@ -156,6 +159,35 @@ class StreamedSpeechTest {
             heardCut = true
             onTrip()
             return Recording(byteArrayOf(4, 5, 6), "audio/wav", heardSpeech = goneOn)
+        }
+    }
+
+    /** A speaker turned right up: each listen over the voice trips at once on its echo, up to [times] listens. */
+    private class Echoes(val times: Int) : VoiceRecorder {
+        var recordings = 0
+        val listening = MutableStateFlow(0)
+        override suspend fun record(activity: VoiceActivity, onLevel: (Float) -> Unit, onSpeech: () -> Unit): Recording {
+            if (recordings++ >= 1) awaitCancellation()
+            onSpeech()
+            return Recording(byteArrayOf(1, 2, 3), "audio/wav", heardSpeech = true)
+        }
+
+        override fun finish() = Unit
+
+        override suspend fun listenOver(
+            bargeIn: BargeIn,
+            playing: () -> Boolean,
+            onTrip: () -> Unit,
+            onLevel: (Float) -> Unit,
+            onListening: () -> Unit,
+        ): Recording? {
+            val n = listening.updateAndGet { it + 1 }
+            onListening()
+            if (n > times) awaitCancellation()
+            // An echo comes only once the voice sounds.
+            while (!playing()) delay(10)
+            onTrip()
+            return Recording(byteArrayOf(4, 5, 6), "audio/wav", heardSpeech = false)
         }
     }
 
@@ -575,6 +607,36 @@ class StreamedSpeechTest {
         assertFalse(stream.closed)
         assertEquals(1, setup.socket.submits.value.size)
         assertTrue(setup.socket.calls.value.none { "session.interrupt" in it })
+        setup.voice.stopChat()
+    }
+
+    /**
+     * A speaker loud enough that its echo trips the microphone again and again (#264): after two holds nobody
+     * talked through, the rest of the reply plays through without listening over it, so it stops stuttering.
+     */
+    @Test
+    fun aVoiceThatKeepsTrippingOnItsOwnEchoPlaysTheRestThrough() = runTest {
+        val recorder = Echoes(times = 3)
+        val stream = Stream()
+        val player = Player(canHold = true)
+        val setup = chat(player = player, recorder = recorder, transcripts = listOf("How was your day?", "")) { stream }
+
+        setup.socket.event("message.start")
+        setup.socket.event("message.delta", """{"text":"It was a long day. First the meeting ran over. "}""")
+        stream.appended.first { it.isNotEmpty() }
+        stream.gateway.send(SpeechStreamEvent.Start(sampleRate = 24_000))
+        stream.gateway.send(SpeechStreamEvent.Audio(byteArrayOf(1, 0, 2, 0)))
+        setup.voice.chat.first { it.phase == VoicePhase.Speaking }
+        recorder.listening.first { it >= 2 }
+        // Room for a third listen to start and trip, were the microphone still asked.
+        advanceTimeBy(1_000)
+
+        assertEquals(2, recorder.listening.value)
+        assertEquals(listOf(true, false, true, false), player.holds)
+        assertFalse(setup.voice.chat.value.bargeIn)
+        assertEquals(VoicePhase.Speaking, setup.voice.chat.value.phase)
+        assertFalse(stream.closed)
+        assertEquals(1, setup.socket.submits.value.size)
         setup.voice.stopChat()
     }
 
