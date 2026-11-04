@@ -1163,8 +1163,10 @@ class VoiceController(
             onEnd = ::stopReading,
             onLost = {
                 readHeld = false
-                // Refused after the app already went away: nothing keeps it playing there.
-                if (away) stopReading()
+                // Refused later (it couldn't go into the foreground): its focus went with the hold, so a reading
+                // waiting for a call to end or lowered under a prompt would never hear back. It stops, as it would
+                // out of sight anyway.
+                if (readNow === read) stopReading()
             },
             onPause = ::pauseReading,
             onFocus = { focusChanged(read, it) },
@@ -1198,6 +1200,8 @@ class VoiceController(
         // Asked before the first piece exists: without the focus the player is held first, so that piece waits.
         askFocus(read)
         apply(read)
+        // Shown now, whether or not the focus changed anything: the controls show this reply from its start.
+        progress.publish()
         job.start()
     }
 

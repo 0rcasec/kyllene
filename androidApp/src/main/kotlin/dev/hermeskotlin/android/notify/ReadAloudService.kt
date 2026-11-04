@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import dev.hermeskotlin.android.R
 import dev.hermeskotlin.core.voice.FocusChange
 import dev.hermeskotlin.core.voice.FocusGrant
+import dev.hermeskotlin.core.voice.FocusRequests
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.ReadAloudMedia
 import org.koin.android.ext.android.inject
@@ -98,8 +99,6 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
     private var onPause: ((Boolean) -> Unit)? = null
     /** The reading held now, told what becomes of the focus it asked for. */
     private var onFocus: ((FocusChange) -> Unit)? = null
-    /** A focus request is registered with the platform, given or not yet. */
-    private var asked = false
     /** A reply being read holds it. */
     private var wanted = false
     /** The service is in the foreground, so it may be stopped. */
@@ -109,15 +108,29 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
     /** What the media controls show now. */
     private var media: ReadAloudMedia? = null
     private val audioManager = context.getSystemService(AudioManager::class.java)
-    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-        .setAudioAttributes(
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
-        )
-        // During a call the focus can come later; it plays then.
-        .setAcceptsDelayedFocusGain(true)
-        // On the main thread, as everything else here: a change is told to the reading held when it arrives.
-        .setOnAudioFocusChangeListener(::focusChanged, Handler(Looper.getMainLooper()))
-        .build()
+    private val main = Handler(Looper.getMainLooper())
+    /** A request of its own for each ask, so a change Android queued for one let go reaches nobody. */
+    private val focusRequests = FocusRequests(
+        make = { listener ->
+            AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
+                )
+                // During a call the focus can come later; it plays then.
+                .setAcceptsDelayedFocusGain(true)
+                // On the main thread, as everything else here.
+                .setOnAudioFocusChangeListener({ change -> focusChange(change)?.let(listener) }, main)
+                .build()
+        },
+        ask = { request ->
+            when (audioManager.requestAudioFocus(request)) {
+                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> FocusGrant.Granted
+                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> FocusGrant.Delayed
+                else -> FocusGrant.Refused
+            }
+        },
+        abandon = { audioManager.abandonAudioFocusRequest(it) },
+    )
     private val wake = context.getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Kyllene:ReadAloud")
         .apply { setReferenceCounted(false) }
@@ -128,7 +141,7 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         this.onEnd = onEnd
         this.onLost = onLost
         this.onPause = onPause
-        // A newer reading takes the focus's word from here; the one it replaced hears nothing more.
+        // A newer reading asks for the focus with a request of its own (focus); the one it replaced hears nothing more.
         this.onFocus = onFocus
         wanted = true
         // A newer reply takes over the session the last one had.
@@ -195,18 +208,11 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
 
     override fun focus(): FocusGrant {
         // Nothing held (the service was refused): it plays as it would without the focus.
-        if (onFocus == null) return FocusGrant.Granted
-        return when (audioManager.requestAudioFocus(focusRequest)) {
-            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> FocusGrant.Granted.also { asked = true }
-            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> FocusGrant.Delayed.also { asked = true }
-            else -> FocusGrant.Refused
-        }
+        val tell = onFocus ?: return FocusGrant.Granted
+        return focusRequests.request(tell)
     }
 
-    override fun unfocus() {
-        if (asked) audioManager.abandonAudioFocusRequest(focusRequest)
-        asked = false
-    }
+    override fun unfocus() = focusRequests.letGo()
 
     /** The service is in the foreground; false when the reading ended meanwhile, so it should stop. */
     internal fun started(): Boolean {
@@ -255,16 +261,13 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         isActive = true
     }
 
-    private fun focusChanged(change: Int) {
-        val tell = onFocus ?: return
-        when (change) {
-            // Only for a request still registered: one let go hears nothing more.
-            AudioManager.AUDIOFOCUS_GAIN -> if (asked) tell(FocusChange.Gain)
-            AudioManager.AUDIOFOCUS_LOSS -> tell(FocusChange.Loss)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> tell(FocusChange.LossForNow)
-            // A notification sound or a navigation prompt: Android lowers music under it itself, but tells speech.
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> tell(FocusChange.Duck)
-        }
+    private fun focusChange(change: Int): FocusChange? = when (change) {
+        AudioManager.AUDIOFOCUS_GAIN -> FocusChange.Gain
+        AudioManager.AUDIOFOCUS_LOSS -> FocusChange.Loss
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> FocusChange.LossForNow
+        // A notification sound or a navigation prompt: Android lowers music under it itself, but tells speech.
+        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> FocusChange.Duck
+        else -> null
     }
 
     private fun action(name: String): PendingIntent = PendingIntent.getService(

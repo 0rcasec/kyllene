@@ -646,6 +646,7 @@ class VoiceControllerTest {
         val shown = mutableListOf<ReadAloudMedia>()
         val focusCallbacks = mutableListOf<(FocusChange) -> Unit>()
         private var onEnd: (() -> Unit)? = null
+        private var onLost: (() -> Unit)? = null
         private var onPause: ((Boolean) -> Unit)? = null
         private var onFocus: ((FocusChange) -> Unit)? = null
         private var asked = false
@@ -656,6 +657,7 @@ class VoiceControllerTest {
             focusCallbacks += onFocus
             if (!grants) return false
             this.onEnd = onEnd
+            this.onLost = onLost
             this.onPause = onPause
             this.onFocus = onFocus
             return true
@@ -690,6 +692,17 @@ class VoiceControllerTest {
         }
 
         fun pause(on: Boolean) = onPause?.invoke(on)
+
+        /** The service couldn't go into the foreground after all: the hold and the focus are gone. */
+        fun lose() {
+            val lost = onLost
+            onEnd = null
+            onLost = null
+            onPause = null
+            onFocus = null
+            unfocus()
+            lost?.invoke()
+        }
 
         /** As the phone's focus listener: a Gain only for a request still registered. */
         fun focusChange(change: FocusChange) {
@@ -1222,5 +1235,47 @@ class VoiceControllerTest {
         // A Gain for the request let go plays nothing.
         keeper.focusChange(FocusChange.Gain)
         assertEquals(listOf(true, false), player.holds)
+    }
+
+    /** Shown in the media controls from its start, before its first piece is voiced, even one that replaced a paused reply. */
+    @Test
+    fun aReadingIsShownBeforeItsFirstPiece() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        // Its job hasn't run: what's shown came from the start itself.
+        assertEquals("The first reply.", keeper.shown.single().title)
+        assertTrue(keeper.shown.last().playing)
+        player.inner.started.receive()
+        voice.pauseReading(true)
+        assertFalse(keeper.shown.last().playing)
+
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        assertEquals("The second reply.", keeper.shown.last().title)
+        assertTrue(keeper.shown.last().playing)
+        voice.stopReading()
+    }
+
+    /**
+     * The service is refused after the reading was held, while it waits for a call to end: its focus went with the
+     * hold, so nothing would ever play it on. It stops, and lets go of the player.
+     */
+    @Test
+    fun aReadingWhoseHoldIsLostStops() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper().apply { grant = FocusGrant.Delayed }
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.waited.receive()
+        keeper.lose()
+
+        assertEquals(ReadAloudState(), voice.reading.value)
+        assertEquals(listOf(true, false), player.holds)
+        assertEquals(1, keeper.abandons)
+        testScheduler.runCurrent()
+        assertTrue(player.inner.started.isEmpty)
     }
 }
