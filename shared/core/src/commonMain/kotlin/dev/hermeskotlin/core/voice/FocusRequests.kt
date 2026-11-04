@@ -15,13 +15,18 @@ class FocusRequests<R : Any>(
     /** The request registered with the platform now, given or not yet. */
     private var current: R? = null
 
-    /** Asks anew for [tell]'s reading; a request still registered (another reading's) is let go first. */
+    /**
+     * Asks anew for [tell]'s reading; a request still registered (another reading's) is let go once the new one is
+     * asked, so music beneath stays down across the switch rather than coming up for a moment between the two.
+     */
     fun request(tell: (FocusChange) -> Unit): FocusGrant {
-        letGo()
+        val previous = current
         lateinit var mine: R
         mine = make { change -> if (current === mine) tell(change) }
         current = mine
         val grant = ask(mine)
+        // The previous one's listener is already deaf (it isn't current), so what its letting go stirs reaches nobody.
+        previous?.let(abandon)
         // Refused registers nothing, so there's nothing to let go or to hear from.
         if (grant == FocusGrant.Refused) current = null
         return grant

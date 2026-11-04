@@ -65,6 +65,32 @@ class FocusRequestsTest {
         assertEquals(listOf(FocusChange.Duck), second)
     }
 
+    /**
+     * A replacement is asked before the older request is let go, so nothing beneath comes up between the two; what
+     * the platform tells the older one as the newer is asked (it ducks for it) reaches nobody.
+     */
+    @Test
+    fun aReplacementIsAskedBeforeTheOlderOneIsLetGo() {
+        val order = mutableListOf<String>()
+        val listeners = mutableListOf<(FocusChange) -> Unit>()
+        val requests = FocusRequests(
+            make = { listener -> listeners += listener; listeners.size - 1 },
+            ask = { n ->
+                order += "ask $n"
+                if (n > 0) listeners[n - 1](FocusChange.Duck)
+                FocusGrant.Granted
+            },
+            abandon = { n -> order += "abandon $n" },
+        )
+        val first = mutableListOf<FocusChange>()
+
+        requests.request { first += it }
+        requests.request { }
+
+        assertEquals(listOf("ask 0", "ask 1", "abandon 0"), order)
+        assertEquals(emptyList(), first)
+    }
+
     /** Refused registers nothing: nothing to let go, nothing heard. */
     @Test
     fun aRefusedRequestHoldsNothing() {

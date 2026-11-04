@@ -126,7 +126,12 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
             when (audioManager.requestAudioFocus(request)) {
                 AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> FocusGrant.Granted
                 AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> FocusGrant.Delayed
-                else -> FocusGrant.Refused
+                else -> {
+                    // Android registers the listener before it asks and keeps it on a refusal; only abandoning
+                    // removes it, so a refused request would hold its reading for the life of the app.
+                    audioManager.abandonAudioFocusRequest(request)
+                    FocusGrant.Refused
+                }
             }
         },
         abandon = { audioManager.abandonAudioFocusRequest(it) },

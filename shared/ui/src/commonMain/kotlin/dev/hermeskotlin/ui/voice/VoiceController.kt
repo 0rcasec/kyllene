@@ -1279,7 +1279,13 @@ class VoiceController(
         }
     }
 
-    /** What became of the audio focus [read] asked for; nothing once it's let go. */
+    /**
+     * What became of the audio focus [read] asked for; nothing once it's let go.
+     *
+     * Two guards against a stale change, and both are needed: the keeper's per-request listener ([FocusRequests])
+     * drops a change for a request already let go when the platform delivers it inline, as the phone does on the
+     * main thread; this identity check drops one for a reading already replaced when it's delivered any other way.
+     */
     private fun focusChanged(read: Reading, change: FocusChange) {
         if (readNow !== read) return
         when (change) {
