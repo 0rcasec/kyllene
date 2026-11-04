@@ -79,6 +79,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.TimeSource
 
@@ -258,6 +259,9 @@ class VoiceController(
         asCall: Boolean = false,
     ) {
         if (chatJob?.isActive == true) return
+        // One chat at a time, app-wide: another screen's ends now, and this one routes only once every earlier one
+        // (this screen's last, still winding down, too) has let its route and microphone go.
+        val windingDown = VoiceChats.endOthers(this)
         cancelDictation()
         // The voice chat has the speaker now.
         endReadingAnywhere()
@@ -280,6 +284,7 @@ class VoiceController(
             },
         ) == true
         val job = scope.launch {
+            withTimeoutOrNull(WIND_DOWN_MS) { windingDown.joinAll() }
             val ringing = if (ringback) launch {
                 try {
                     while (isActive) {
@@ -307,7 +312,7 @@ class VoiceController(
             }
         }
         chatJob = job
-        VoiceChats.started(job)
+        VoiceChats.started(job, this, ::stopChat)
         job.invokeOnCompletion {
             VoiceChats.ended(job)
             // A newer chat may already hold it again.
@@ -1214,11 +1219,13 @@ class VoiceController(
                 if (readingJob == null) {
                     readHeld = false
                     readKeepAlive?.release()
+                    VoiceReadings.done(this@VoiceController)
                 }
             }
         }
         readingJob = job
         readNow = read
+        VoiceReadings.reading(this, ::stopReading)
         letGo(replaced, replacedRead)
         // Asked before the first piece exists: without the focus the player is held first, so that piece waits.
         askFocus(read)
@@ -1235,6 +1242,7 @@ class VoiceController(
         readingJob = null
         readNow = null
         _reading.value = ReadAloudState()
+        VoiceReadings.done(this)
         letGo(job, read)
     }
 
@@ -1265,6 +1273,8 @@ class VoiceController(
     private fun endReadingAnywhere() {
         stopReading()
         readKeepAlive?.end()
+        // Also one the playback service never held (refused at once), which its end() can't reach.
+        VoiceReadings.stopOthers(this)
     }
 
     /**
@@ -1380,6 +1390,11 @@ class VoiceController(
         onText: (String) -> Unit,
     ) {
         if (dictationJob?.isActive == true || chatJob?.isActive == true) return
+        // Another screen's chat has the microphone, and maybe the car's or a headset's for it.
+        if (VoiceChats.any) {
+            _dictation.value = DictationState(error = "A call is on.")
+            return
+        }
         // The microphone would hear it.
         endReadingAnywhere()
         _dictation.value = DictationState(recording = true)
@@ -1463,6 +1478,8 @@ class VoiceController(
 
     private companion object {
         const val MAX_FAILURES = 3
+        /** How long a new chat waits for earlier ones to let their route go; past it, it goes on regardless. */
+        const val WIND_DOWN_MS = 2_000L
         /** Holds nobody talked through before the rest of a reply plays without listening over it. */
         const val MAX_ECHO_HOLDS = 2
         /** Times a question is asked before it's left for the screen. */
@@ -1681,11 +1698,37 @@ private class RoomNoise(private val capacity: Int) {
  * each by its job, so one ending doesn't speak for another, and whether or not the call service held it up.
  */
 internal object VoiceChats {
-    private val running = MutableStateFlow(emptySet<Job>())
+    private class Chat(val job: Job, val owner: Any, val stop: () -> Unit)
 
-    fun started(job: Job) = running.update { it + job }
+    private val running = MutableStateFlow(emptyList<Chat>())
 
-    fun ended(job: Job) = running.update { it - job }
+    fun started(job: Job, owner: Any, stop: () -> Unit) = running.update { it + Chat(job, owner, stop) }
+
+    fun ended(job: Job) = running.update { chats -> chats.filterNot { it.job === job } }
 
     val any: Boolean get() = running.value.isNotEmpty()
+
+    /**
+     * Ends every chat [owner] doesn't run ([stop], on the main thread like the rest), and hands back the jobs of all
+     * still running or winding down, [owner]'s own earlier one too, for a new chat to wait out before it routes.
+     */
+    fun endOthers(owner: Any): List<Job> {
+        val now = running.value
+        now.filter { it.owner !== owner }.forEach { it.stop() }
+        return now.map { it.job }
+    }
+}
+
+/**
+ * The replies being read aloud now, by the controller reading each, so a voice chat or dictation on any screen ends
+ * them, also one the playback service never held up (whose [ReadAloudKeepAlive.end] has nothing to end).
+ */
+internal object VoiceReadings {
+    private val readers = MutableStateFlow(emptyMap<Any, () -> Unit>())
+
+    fun reading(owner: Any, stop: () -> Unit) = readers.update { it + (owner to stop) }
+
+    fun done(owner: Any) = readers.update { it - owner }
+
+    fun stopOthers(owner: Any) = readers.value.filterKeys { it !== owner }.values.forEach { it() }
 }

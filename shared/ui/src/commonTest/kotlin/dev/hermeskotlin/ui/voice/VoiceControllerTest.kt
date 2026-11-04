@@ -1504,7 +1504,10 @@ class VoiceControllerTest {
         chat.stopReading()
     }
 
-    /** Two screens' chats: the one ending first doesn't let Read aloud start under the other. */
+    /**
+     * A chat on another screen ends the first one: the first one's end, as it winds down after, doesn't let Read aloud
+     * start under the newer one.
+     */
     @Test
     fun aChatEndingDoesntSpeakForAnotherStillOn() = runTest {
         val first = RoomRecorder(emptyList())
@@ -1515,16 +1518,48 @@ class VoiceControllerTest {
         val chat = VoiceController(voiced(mutableListOf()), FakeRecorder(), PausablePlayer(HeldPlayer()), backgroundScope, backgroundScope, readKeepAlive = keeper)
 
         one.startChat(offlineSession(), gateway, null)
-        two.startChat(offlineSession(), gateway, null)
         first.heardRoom.await()
-        second.heardRoom.await()
-        one.stopChat()
+        two.startChat(offlineSession(), gateway, null)
         one.chat.first { it.phase == VoicePhase.Off }
-        testScheduler.runCurrent()
+        second.heardRoom.await()
         chat.readAloud("r1", "A long reply.", gateway, null)
 
         assertEquals(ReadAloudState(error = "A call is on."), chat.reading.value)
         assertEquals(0, keeper.holds)
         two.stopChat()
+    }
+
+    /** Another screen's chat has the microphone: dictation doesn't start under it, and says why. */
+    @Test
+    fun dictationWaitsOutAnotherScreensChat() = runTest {
+        val recorder = RoomRecorder(emptyList())
+        val call = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope)
+        val voice = VoiceController(audio("unused", Requests()), FakeRecorder(), FakePlayer(), backgroundScope, backgroundScope)
+
+        call.startChat(offlineSession(), gateway, null)
+        recorder.heardRoom.await()
+        voice.startDictation(gateway, "work") { }
+
+        assertEquals(DictationState(error = "A call is on."), voice.dictation.value)
+        call.stopChat()
+    }
+
+    /** A reply read aloud the playback service never held up still ends as another screen's chat starts. */
+    @Test
+    fun aReadingTheServiceRefusedEndsForAnotherScreensChat() = runTest {
+        val player = HeldPlayer(holds = true)
+        val keeper = FakeReadKeeper(grants = false)
+        val chat = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+        val recorder = RoomRecorder(emptyList())
+        val call = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope)
+
+        chat.readAloud("r1", "A long reply.", gateway, null)
+        player.started.receive()
+        call.startChat(offlineSession(), gateway, null)
+
+        assertNull(chat.reading.value.key)
+        testScheduler.runCurrent()
+        assertEquals(1, player.cut)
+        call.stopChat()
     }
 }

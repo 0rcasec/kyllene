@@ -194,11 +194,21 @@ class StreamedSpeechTest {
     }
 
     /** [canHold]: the voice holds when someone seems to cut in; [holds] is each hold and letting go. */
-    private class Player(val fails: Boolean = false, val canHold: Boolean = false) : SpeechPlayer {
+    private class Player(
+        val fails: Boolean = false,
+        val canHold: Boolean = false,
+        /** Shared by several players: each route opened and closed, in order, by [name]. */
+        val routes: MutableList<String>? = null,
+        val name: String = "",
+    ) : SpeechPlayer {
         var audioOpen = false
         override fun chainedChatAudio(): () -> Unit {
             audioOpen = true
-            return { audioOpen = false }
+            routes?.add("$name open")
+            return {
+                if (audioOpen) routes?.add("$name close")
+                audioOpen = false
+            }
         }
         val holds = mutableListOf<Boolean>()
         override fun hold(on: Boolean): Boolean {
@@ -321,18 +331,52 @@ class StreamedSpeechTest {
         assertFalse(player.audioOpen)
     }
 
+    /**
+     * One chat at a time, app-wide: a chat started on another screen ends this one, and routes only once this one has
+     * let its route go.
+     */
+    @Test
+    fun aChatOnAnotherScreenEndsThisOneAndRoutesAfterIt() = runTest {
+        val routes = mutableListOf<String>()
+        val first = chat(player = Player(routes = routes, name = "first")) { Stream() }
+        val second = chat(player = Player(routes = routes, name = "second")) { Stream() }
+
+        first.voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(listOf("first open", "first close", "second open"), routes)
+        second.voice.stopChat()
+    }
+
     /** Call audio for the chat: [takes] is whether the car or headset took the call in time. */
-    private class FakeCallAudio(private val takes: Boolean) : CallAudio {
+    private class FakeCallAudio(
+        private val takes: Boolean,
+        /** Shared by several: each hold and release, in order, by [name]. */
+        val routes: MutableList<String>? = null,
+        val name: String = "",
+    ) : CallAudio {
         var held = 0
         var released = 0
         override suspend fun hold(): Boolean {
             held++
+            routes?.add("$name hold")
             return takes
         }
 
         override fun release() {
             released++
+            routes?.add("$name release")
         }
+    }
+
+    /** The car's call: a chat on another screen holds it only once this one's wind-down has released it. */
+    @Test
+    fun aChatOnAnotherScreenHoldsTheCallAfterThisOneReleasesIt() = runTest {
+        val routes = mutableListOf<String>()
+        val first = chat(callAudio = FakeCallAudio(true, routes, "first"), asCall = true) { Stream() }
+        val second = chat(callAudio = FakeCallAudio(true, routes, "second"), asCall = true) { Stream() }
+
+        first.voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(listOf("first hold", "first release", "second hold"), routes)
+        second.voice.stopChat()
     }
 
     /** One owner routes a chat: call audio that took has it, so the speaker's call routing stays shut. */
