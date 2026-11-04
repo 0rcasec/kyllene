@@ -14,6 +14,7 @@ import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
 import dev.hermeskotlin.core.voice.FocusChange
 import dev.hermeskotlin.core.voice.FocusGrant
+import dev.hermeskotlin.core.voice.FocusRequests
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.ReadAloudMedia
 import dev.hermeskotlin.core.voice.Recording
@@ -514,7 +515,13 @@ class VoiceControllerTest {
     }
 
     /** Plays each clip until told to finish it, or for good when [holds]; says which clips started and which were cut. */
-    private class HeldPlayer(private val holds: Boolean = false) : SpeechPlayer {
+    private class HeldPlayer(
+        private val holds: Boolean = false,
+        /** A clip plays until this is completed, then ends. */
+        private val gate: CompletableDeferred<Unit>? = null,
+        /** A clip fails, once its [gate] is open, rather than ending. */
+        private val fails: Boolean = false,
+    ) : SpeechPlayer {
         val started = Channel<String>(Channel.UNLIMITED)
         val played = mutableListOf<String>()
         var cut = 0
@@ -523,6 +530,8 @@ class VoiceControllerTest {
             started.send(clip)
             try {
                 if (holds) awaitCancellation()
+                gate?.await()
+                if (fails) error("The speaker failed.")
                 played += clip
             } catch (e: CancellationException) {
                 cut++
@@ -634,8 +643,9 @@ class VoiceControllerTest {
     /**
      * Holds Read aloud up out of sight, as the playback service does; [end] is its notification's Stop, [pause] its
      * media controls' Pause and Play, and [shown] what they showed. The audio focus answers [grant], counted in
-     * [requests] and [abandons]; [focusChange] is the platform telling the reading held what became of it, and
-     * [focusCallbacks] every reading's own line, to speak for one already let go.
+     * [requests] and [abandons], each in order in [asks]; they run through the phone's own [FocusRequests], over a
+     * platform that counts what it is asked and what it is let go. [focusChange] is the platform telling the reading
+     * held what became of it, and [focusCallbacks] every reading's own line, to speak for one already let go.
      */
     private class FakeReadKeeper(private val grants: Boolean = true) : ReadAloudKeepAlive {
         var holds = 0
@@ -643,13 +653,29 @@ class VoiceControllerTest {
         var grant = FocusGrant.Granted
         var requests = 0
         var abandons = 0
+        /** Every ask ("ask") and every let go ("abandon") the platform saw, in order. */
+        val asks = mutableListOf<String>()
         val shown = mutableListOf<ReadAloudMedia>()
         val focusCallbacks = mutableListOf<(FocusChange) -> Unit>()
         private var onEnd: (() -> Unit)? = null
         private var onLost: (() -> Unit)? = null
         private var onPause: ((Boolean) -> Unit)? = null
         private var onFocus: ((FocusChange) -> Unit)? = null
-        private var asked = false
+        /** The platform's side: each request made has its own listener, and a request asked is let go once. */
+        private val platformListeners = mutableListOf<(FocusChange) -> Unit>()
+        private val focusRequests = FocusRequests(
+            make = { listener -> platformListeners += listener; platformListeners.size - 1 },
+            ask = {
+                requests++
+                asks += "ask"
+                grant
+            },
+            abandon = {
+                abandons++
+                asks += "abandon"
+            },
+        )
+
         override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean = hold(onEnd, onLost, {}, {})
 
         override fun hold(onEnd: () -> Unit, onLost: () -> Unit, onPause: (Boolean) -> Unit, onFocus: (FocusChange) -> Unit): Boolean {
@@ -664,16 +690,11 @@ class VoiceControllerTest {
         }
 
         override fun focus(): FocusGrant {
-            if (onFocus == null) return FocusGrant.Granted
-            requests++
-            if (grant != FocusGrant.Refused) asked = true
-            return grant
+            val tell = onFocus ?: return FocusGrant.Granted
+            return focusRequests.request(tell)
         }
 
-        override fun unfocus() {
-            if (asked) abandons++
-            asked = false
-        }
+        override fun unfocus() = focusRequests.letGo()
 
         override fun show(media: ReadAloudMedia) {
             shown += media
@@ -704,10 +725,9 @@ class VoiceControllerTest {
             lost?.invoke()
         }
 
-        /** As the phone's focus listener: a Gain only for a request still registered. */
+        /** As the phone's focus listener of the latest request: it speaks only while that request is the one asked now. */
         fun focusChange(change: FocusChange) {
-            val tell = onFocus ?: return
-            if (change != FocusChange.Gain || asked) tell(change)
+            platformListeners.lastOrNull()?.invoke(change)
         }
     }
 
@@ -1118,6 +1138,8 @@ class VoiceControllerTest {
         voice.readAloud("r2", "The second reply.", gateway, null)
         assertEquals("The second reply.", player.inner.started.receive())
 
+        // The newer reading's ask let the first request go, once; its words after that let nothing go.
+        assertEquals(1, keeper.abandons)
         first(FocusChange.LossForNow)
         first(FocusChange.Duck)
         first(FocusChange.Loss)
@@ -1125,7 +1147,7 @@ class VoiceControllerTest {
         testScheduler.runCurrent()
         assertEquals(emptyList(), player.holds)
         assertEquals(emptyList(), player.ducks)
-        assertEquals(0, keeper.abandons)
+        assertEquals(1, keeper.abandons)
         assertEquals(ReadAloudState("r2"), voice.reading.value)
         voice.stopReading()
     }
@@ -1140,7 +1162,10 @@ class VoiceControllerTest {
         aWordForAReadingLetGo(CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler)))
     }
 
-    /** A newer reply asks for the focus itself, rather than taking over one the reply before it had lost. */
+    /**
+     * A newer reply asks for the focus itself, rather than taking over one the reply before it had lost; the older
+     * request is let go, and only once the new one is asked.
+     */
     @Test
     fun aNewerReplyAsksForTheFocusItself() = runTest {
         val player = PausablePlayer(HeldPlayer(holds = true))
@@ -1155,6 +1180,9 @@ class VoiceControllerTest {
         voice.readAloud("r2", "The second reply.", gateway, null)
 
         assertEquals(2, keeper.requests)
+        // The first request is let go once the second is asked, so what plays beneath never comes up between them.
+        assertEquals(1, keeper.abandons)
+        assertEquals(listOf("ask", "ask", "abandon"), keeper.asks)
         // The first one's hold let go, the second's taken before its first piece.
         assertEquals(listOf(true, false, true), player.holds)
         assertEquals("The second reply.", player.waited.receive())
@@ -1277,5 +1305,116 @@ class VoiceControllerTest {
         assertEquals(1, keeper.abandons)
         testScheduler.runCurrent()
         assertTrue(player.inner.started.isEmpty)
+    }
+
+    /** A reading lowered under a passing sound that then ends by itself puts the shared player back. */
+    @Test
+    fun aLoweredReadingThatEndsByItselfPutsTheVoiceBack() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val player = PausablePlayer(HeldPlayer(gate = gate))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.inner.started.receive()
+        keeper.focusChange(FocusChange.Duck)
+        assertEquals(listOf(true), player.ducks)
+
+        gate.complete(Unit)
+        voice.reading.first { it.key == null }
+        assertEquals(listOf(true, false), player.ducks)
+    }
+
+    /** A reading lowered under a passing sound whose voice then fails puts the shared player back. */
+    @Test
+    fun aLoweredReadingThatFailsPutsTheVoiceBack() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val player = PausablePlayer(HeldPlayer(gate = gate, fails = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.inner.started.receive()
+        keeper.focusChange(FocusChange.Duck)
+        assertEquals(listOf(true), player.ducks)
+
+        gate.complete(Unit)
+        voice.reading.first { it.key == null }
+        assertEquals(listOf(true, false), player.ducks)
+    }
+
+    /** A reading lowered under a passing sound that a newer reply replaces puts the shared player back at once. */
+    @Test
+    fun aLoweredReadingAReplyReplacesPutsTheVoiceBack() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.inner.started.receive()
+        keeper.focusChange(FocusChange.Duck)
+        assertEquals(listOf(true), player.ducks)
+
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        assertEquals(listOf(true, false), player.ducks)
+        assertEquals("The second reply.", player.inner.started.receive())
+        voice.stopReading()
+        assertEquals(listOf(true, false), player.ducks)
+    }
+
+    /**
+     * A call as the person lives it: the reading waits for the call to end, they pause it and play it on during the
+     * call (which asks again, and waits again, the controls showing Play's Pause with the bar still), and it plays
+     * once the call ends.
+     */
+    @Test
+    fun pausedAndPlayedOnDuringACallPlaysWhenTheCallEnds() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper().apply { grant = FocusGrant.Delayed }
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        assertEquals("A long reply.", player.waited.receive())
+        assertEquals(1, keeper.requests)
+
+        keeper.pause(true)
+        assertEquals(1, keeper.abandons)
+        assertEquals(ReadAloudState("r1", paused = true), voice.reading.value)
+        assertFalse(keeper.shown.last().playing)
+
+        keeper.pause(false)
+        assertEquals(2, keeper.requests)
+        assertEquals(listOf(true), player.holds)
+        assertEquals(ReadAloudState("r1"), voice.reading.value)
+        assertTrue(keeper.shown.last().playing)
+        assertTrue(keeper.shown.last().waiting)
+        assertTrue(player.inner.started.isEmpty)
+
+        keeper.focusChange(FocusChange.Gain)
+        assertEquals(listOf(true, false), player.holds)
+        assertFalse(keeper.shown.last().waiting)
+        assertEquals("A long reply.", player.inner.started.receive())
+        voice.stopReading()
+    }
+
+    /**
+     * The service is refused after a reading that was given the focus started: its focus went with the hold, and
+     * nothing would tell it of a passing sound or a call. It stops, and lets go of the request.
+     */
+    @Test
+    fun aGrantedReadingWhoseHoldIsLostStops() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.inner.started.receive()
+        keeper.lose()
+
+        assertEquals(ReadAloudState(), voice.reading.value)
+        assertEquals(1, keeper.abandons)
+        testScheduler.runCurrent()
+        assertEquals(1, player.inner.cut)
+        assertEquals(emptyList(), player.holds)
     }
 }
