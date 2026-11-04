@@ -608,7 +608,8 @@ class VoiceController(
         while (true) {
             // Muted: the microphone stays shut over the reply too, and listens again once unmuted.
             _chat.first { !it.muted }
-            val detector = BargeIn(settings.copy(gate = gate), activity.silenceMs, roomFloor)
+            // Cutting in may have been turned off while muted, with no detector then to tell (setCutIn).
+            val detector = BargeIn(settings.copy(gate = if (cutIn) gate else Float.MAX_VALUE), activity.silenceMs, roomFloor)
             this.detector = detector
             var cut = false
             val heard = try {

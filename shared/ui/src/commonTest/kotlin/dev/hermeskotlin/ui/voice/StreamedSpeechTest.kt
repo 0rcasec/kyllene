@@ -466,6 +466,25 @@ class StreamedSpeechTest {
         setup.voice.stopChat()
     }
 
+    /** Cutting in turned off while muted: once unmuted, the microphone listens over the reply with nothing reaching the bar. */
+    @Test
+    fun cutInTurnedOffWhileMutedStaysOffOnceUnmuted() = runTest {
+        val recorder = CutsIn()
+        val setup = chat(recorder = recorder) { null }
+        setup.voice.setCutIn(true, 0.4f)
+
+        setup.socket.event("message.start")
+        recorder.listening.first { it >= 1 }
+        setup.voice.toggleMute()
+        setup.voice.chat.first { it.muted && !it.bargeIn }
+        setup.voice.setCutIn(false, 0.4f)
+        setup.voice.toggleMute()
+        recorder.listening.first { it >= 2 }
+
+        assertEquals(Float.MAX_VALUE, recorder.bargeIn!!.gate)
+        setup.voice.stopChat()
+    }
+
     /** Muted while what was said over the agent is written down: it's dropped, and the agent goes on. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
