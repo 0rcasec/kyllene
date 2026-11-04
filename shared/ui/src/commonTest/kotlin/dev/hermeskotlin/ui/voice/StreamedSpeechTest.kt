@@ -466,7 +466,29 @@ class StreamedSpeechTest {
         setup.voice.stopChat()
     }
 
-    /** Cutting in turned off while muted: once unmuted, the microphone listens over the reply with nothing reaching the bar. */
+    /** Cutting in off as the reply starts, then turned on while it plays: the microphone listens over it from then. */
+    @Test
+    fun cutInTurnedOnMidReplyListensFromThen() = runTest {
+        val recorder = CutsIn()
+        val stream = Stream()
+        val setup = chat(recorder = recorder) { stream }
+        setup.voice.setCutIn(false, 0.4f)
+
+        setup.socket.event("message.start")
+        setup.socket.event("message.delta", """{"text":"It was a long day. "}""")
+        stream.appended.first { it.isNotEmpty() }
+        stream.gateway.send(SpeechStreamEvent.Start(sampleRate = 24_000))
+        stream.gateway.send(SpeechStreamEvent.Audio(byteArrayOf(1, 0, 2, 0)))
+        testScheduler.runCurrent()
+        assertEquals(0, recorder.listening.value)
+
+        setup.voice.setCutIn(true, 0.4f)
+        recorder.listening.first { it >= 1 }
+        assertEquals(0.4f, recorder.bargeIn!!.gate)
+        setup.voice.stopChat()
+    }
+
+    /** Cutting in turned off while muted: once unmuted, the microphone stays shut over the reply until it's on again. */
     @Test
     fun cutInTurnedOffWhileMutedStaysOffOnceUnmuted() = runTest {
         val recorder = CutsIn()
@@ -479,9 +501,13 @@ class StreamedSpeechTest {
         setup.voice.chat.first { it.muted && !it.bargeIn }
         setup.voice.setCutIn(false, 0.4f)
         setup.voice.toggleMute()
-        recorder.listening.first { it >= 2 }
+        setup.voice.chat.first { !it.muted }
+        testScheduler.runCurrent()
+        assertEquals(1, recorder.listening.value)
 
-        assertEquals(Float.MAX_VALUE, recorder.bargeIn!!.gate)
+        setup.voice.setCutIn(true, 0.4f)
+        recorder.listening.first { it >= 2 }
+        assertEquals(0.4f, recorder.bargeIn!!.gate)
         setup.voice.stopChat()
     }
 

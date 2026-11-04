@@ -186,6 +186,8 @@ class VoiceController(
     private val room = RoomNoise(ROOM_FRAMES)
     /** This phone's say on cutting in ([setCutIn]): at all, and the least level that can. */
     @kotlin.concurrent.Volatile private var cutIn = true
+    /** [cutIn] for a listen waiting on it, so turning cutting in on mid-reply opens the microphone then. */
+    private val cutInOn = MutableStateFlow(true)
     @kotlin.concurrent.Volatile private var gate = 0f
     /** The detector listening over the voice now, so a gate moved meanwhile applies at once. */
     @kotlin.concurrent.Volatile private var detector: BargeIn? = null
@@ -428,6 +430,7 @@ class VoiceController(
      */
     fun setCutIn(on: Boolean, gate: Float) {
         cutIn = on
+        cutInOn.value = on
         this.gate = gate
         detector?.gate = if (on) gate else Float.MAX_VALUE
     }
@@ -604,10 +607,12 @@ class VoiceController(
      */
     private suspend fun listenOver(activity: VoiceActivity, tripped: CompletableDeferred<Unit>): Recording? {
         val settings = bargeIn?.await() ?: return null
-        if (!settings.enabled || !cutIn || cantListenOver) return null
+        if (!settings.enabled || cantListenOver) return null
         while (true) {
             // Muted: the microphone stays shut over the reply too, and listens again once unmuted.
             _chat.first { !it.muted }
+            // Cutting in off on this phone: shut too, until it's turned on, mid-reply or not.
+            cutInOn.first { it }
             // Cutting in may have been turned off while muted, with no detector then to tell (setCutIn).
             val detector = BargeIn(settings.copy(gate = if (cutIn) gate else Float.MAX_VALUE), activity.silenceMs, roomFloor)
             this.detector = detector
