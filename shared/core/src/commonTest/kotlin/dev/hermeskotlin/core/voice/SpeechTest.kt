@@ -58,9 +58,21 @@ class SpeechTest {
     fun laterPiecesGrowSoALongReplyTakesFewerRequests() {
         val text = "Short opener here. " + "This sentence carries about fifty characters, yes. ".repeat(34)
         val chunks = speechChunks(text)
-        val limits = listOf(160, 480, 1440, 2000)
-        chunks.forEachIndexed { i, chunk -> assertTrue(chunk.length <= limits[minOf(i, 3)], "piece $i is ${chunk.length}") }
-        assertEquals(3, chunks.size, "a ${text.length}-char reply")
+        assertTrue(chunks[0].length <= 160)
+        chunks.zipWithNext { before, piece -> assertTrue(piece.length <= maxOf(160, before.length * 3), "${before.length} then ${piece.length}") }
+        assertEquals(4, chunks.size, "a ${text.length}-char reply")
+        assertEquals(text.trim(), chunks.joinToString(" "))
+    }
+
+    @Test
+    fun aShortFirstPieceKeepsTheSecondOneShort() {
+        // Read aloud on a real reply: a 100-char first piece, then 472 chars, which took longer to make than
+        // the first piece took to say. The second piece now grows from the 100, not from the 160 limit.
+        val text = "The moment I rolled backward off the boat, the warm black water closed over me like a blanket. " +
+            "My torch cut a thin white path through the dark water, and the reef woke up around me. ".repeat(20)
+        val chunks = speechChunks(text)
+        assertTrue(chunks[0].length < 100)
+        assertTrue(chunks[1].length <= chunks[0].length * 3, "second piece ${chunks[1].length}")
         assertEquals(text.trim(), chunks.joinToString(" "))
     }
 
