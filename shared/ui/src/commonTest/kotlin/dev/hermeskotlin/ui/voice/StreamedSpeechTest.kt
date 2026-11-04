@@ -180,6 +180,7 @@ class StreamedSpeechTest {
             onTrip: () -> Unit,
             onLevel: (Float) -> Unit,
             onListening: () -> Unit,
+            onMeter: (Float) -> Unit,
         ): Recording? {
             val n = listening.updateAndGet { it + 1 }
             onListening()
