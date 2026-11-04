@@ -21,7 +21,6 @@ import dev.hermeskotlin.core.voice.Recording
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.SpokenAudio
 import dev.hermeskotlin.core.voice.VoiceActivity
-import dev.hermeskotlin.core.voice.VoiceKeepAlive
 import dev.hermeskotlin.core.voice.VoiceRecorder
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -1419,29 +1418,57 @@ class VoiceControllerTest {
         assertEquals(emptyList(), player.holds)
     }
 
-    /** The voice chat's keeper while another screen's call holds it. */
-    private class HeldKeepAlive(override val holding: Boolean) : VoiceKeepAlive {
-        override fun hold(onEnd: () -> Unit, onLost: () -> Unit) = true
-        override fun release() = Unit
-    }
-
-    /** A call on another screen has the speaker: Read aloud doesn't start under it, and says why. */
+    /**
+     * Another screen's chat has the speaker (here with no call service at all, as when Android refused it): Read aloud
+     * doesn't start under it and says why, and starts once that chat is over.
+     */
     @Test
-    fun readAloudDoesntStartUnderAnotherScreensCall() = runTest {
+    fun readAloudWaitsOutAnotherScreensChat() = runTest {
+        val recorder = RoomRecorder(emptyList())
+        val call = VoiceController(audio("unused", Requests()), recorder, FakePlayer(), backgroundScope, backgroundScope)
         val player = PausablePlayer(HeldPlayer())
         val keeper = FakeReadKeeper()
-        val voice = VoiceController(
-            voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope,
-            keepAlive = HeldKeepAlive(holding = true), readKeepAlive = keeper,
-        )
+        val chat = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
 
-        voice.readAloud("r1", "A long reply.", gateway, null)
+        call.startChat(offlineSession(), gateway, null)
+        recorder.heardRoom.await()
+        chat.readAloud("r1", "A long reply.", gateway, null)
 
-        assertEquals(ReadAloudState(error = "A call is on."), voice.reading.value)
+        assertEquals(ReadAloudState(error = "A call is on."), chat.reading.value)
         assertEquals(0, keeper.holds)
         assertEquals(0, keeper.requests)
         testScheduler.runCurrent()
         assertTrue(player.inner.started.isEmpty)
-        assertEquals(emptyList(), player.holds)
+
+        call.stopChat()
+        call.chat.first { it.phase == VoicePhase.Off }
+        testScheduler.runCurrent()
+        chat.readAloud("r1", "A long reply.", gateway, null)
+        assertEquals("r1", chat.reading.value.key)
+        chat.stopReading()
+    }
+
+    /** Two screens' chats: the one ending first doesn't let Read aloud start under the other. */
+    @Test
+    fun aChatEndingDoesntSpeakForAnotherStillOn() = runTest {
+        val first = RoomRecorder(emptyList())
+        val second = RoomRecorder(emptyList())
+        val one = VoiceController(audio("unused", Requests()), first, FakePlayer(), backgroundScope, backgroundScope)
+        val two = VoiceController(audio("unused", Requests()), second, FakePlayer(), backgroundScope, backgroundScope)
+        val keeper = FakeReadKeeper()
+        val chat = VoiceController(voiced(mutableListOf()), FakeRecorder(), PausablePlayer(HeldPlayer()), backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        one.startChat(offlineSession(), gateway, null)
+        two.startChat(offlineSession(), gateway, null)
+        first.heardRoom.await()
+        second.heardRoom.await()
+        one.stopChat()
+        one.chat.first { it.phase == VoicePhase.Off }
+        testScheduler.runCurrent()
+        chat.readAloud("r1", "A long reply.", gateway, null)
+
+        assertEquals(ReadAloudState(error = "A call is on."), chat.reading.value)
+        assertEquals(0, keeper.holds)
+        two.stopChat()
     }
 }

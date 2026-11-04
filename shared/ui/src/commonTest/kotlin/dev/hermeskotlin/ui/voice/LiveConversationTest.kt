@@ -911,7 +911,7 @@ class LiveConversationTest {
     }
 
     private class Keeper(private val grants: Boolean) : VoiceKeepAlive {
-        override var holding = false
+        var holding = false
         var onEnd: (() -> Unit)? = null
         var onLost: (() -> Unit)? = null
         override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean {

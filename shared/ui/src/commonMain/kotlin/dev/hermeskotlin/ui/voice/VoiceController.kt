@@ -302,7 +302,9 @@ class VoiceController(
             }
         }
         chatJob = job
+        VoiceChats.started(job)
         job.invokeOnCompletion {
+            VoiceChats.ended(job)
             // A newer chat may already hold it again.
             if (chatJob === job || chatJob == null) {
                 held = false
@@ -1152,9 +1154,9 @@ class VoiceController(
      */
     fun readAloud(key: String, reply: String, gateway: GatewayUrl, profile: String?) {
         if (chatJob?.isActive == true || dictationJob?.isActive == true) return
-        // Another screen's call has the speaker (the phone call screen's chat, or a GPT-Live call): a reading would
-        // play as part of the call and pause and duck its voice.
-        if (keepAlive?.holding == true) {
+        // Another screen's chat has the speaker (the phone call screen's, or a GPT-Live call), held up by the call
+        // service or not: a reading would play as part of the call and pause and duck its voice.
+        if (VoiceChats.any) {
             _reading.value = ReadAloudState(error = "A call is on.")
             return
         }
@@ -1663,4 +1665,18 @@ private class RoomNoise(private val capacity: Int) {
 
     /** A copy of what's held, in no particular order. */
     fun levels(): FloatArray = levels.copyOf(size)
+}
+
+/**
+ * The voice chats running now in any controller (the chat screen's, the phone call screen's, the assistant panel's),
+ * each by its job, so one ending doesn't speak for another, and whether or not the call service held it up.
+ */
+internal object VoiceChats {
+    private val running = MutableStateFlow(emptySet<Job>())
+
+    fun started(job: Job) = running.update { it + job }
+
+    fun ended(job: Job) = running.update { it - job }
+
+    val any: Boolean get() = running.value.isNotEmpty()
 }
