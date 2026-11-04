@@ -1,9 +1,12 @@
 package dev.hermeskotlin.core.voice
 
 import android.content.Context
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -70,7 +73,30 @@ internal class CallAudioRoute(private val audioManager: AudioManager) {
  * recorder then listens with the call's microphone ([microphone]) and the player plays as a call ([on]).
  */
 class AndroidCallAudio(context: Context) : CallAudio {
-    private val route = CallAudioRoute(context.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val route = CallAudioRoute(audioManager)
+
+    /** The route took (the car's call channel opened): only then can another chat share it. */
+    @Volatile private var ready = false
+
+    /** Where the call's sound goes now, when the platform says (Android 12 and later). */
+    private var device: AudioDeviceInfo? = null
+
+    /**
+     * The car or headset the call went to, gone mid-chat (the car turned off): Android drops the route with it, so
+     * the call goes to the phone's speaker, or another headset, and listens with that one's microphone.
+     */
+    private val devicesChanged = object : AudioDeviceCallback() {
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            val gone = device ?: return
+            if (!on || removedDevices.none { it.id == gone.id }) return
+            runCatching {
+                route.unroute()
+                device = route.route()
+                microphone = device?.let(route::microphoneFor)
+            }
+        }
+    }
 
     /** Held: the voice plays as a call. */
     @Volatile var on = false
@@ -92,6 +118,8 @@ class AndroidCallAudio(context: Context) : CallAudio {
      */
     override suspend fun hold(): Boolean {
         if (on) {
+            // Another chat's route still opening: this one doesn't count on it, and plays without.
+            if (!ready) return false
             holders++
             return true
         }
@@ -117,6 +145,9 @@ class AndroidCallAudio(context: Context) : CallAudio {
             return false
         }
         microphone = device?.let(route::microphoneFor)
+        this.device = device
+        ready = true
+        runCatching { audioManager.registerAudioDeviceCallback(devicesChanged, Handler(Looper.getMainLooper())) }
         return true
     }
 
@@ -124,6 +155,9 @@ class AndroidCallAudio(context: Context) : CallAudio {
         if (!on) return
         if (--holders > 0) return
         on = false
+        if (ready) runCatching { audioManager.unregisterAudioDeviceCallback(devicesChanged) }
+        ready = false
+        device = null
         microphone = null
         route.unroute()
     }
