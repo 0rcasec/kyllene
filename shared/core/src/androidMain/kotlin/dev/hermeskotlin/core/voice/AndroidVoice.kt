@@ -486,7 +486,11 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
                     }
                 }
                 player.prepareAsync()
-                continuation.invokeOnCancellation { runCatching { player.stop() } }
+                continuation.invokeOnCancellation {
+                    // Stopped for good: letting go of a hold mustn't start it again.
+                    synchronized(lock) { if (clip === player) clip = null }
+                    runCatching { player.stop() }
+                }
             }
         } finally {
             synchronized(lock) { if (clip === player) clip = null }

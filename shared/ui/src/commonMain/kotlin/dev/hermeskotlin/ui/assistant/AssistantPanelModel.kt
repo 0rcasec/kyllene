@@ -22,6 +22,7 @@ import dev.hermeskotlin.core.settings.SettingsStore
 import dev.hermeskotlin.core.settings.startInstruction
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.DeviceDictation
+import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.VoiceRecorder
 import dev.hermeskotlin.ui.bots.BotFaces
@@ -118,6 +119,8 @@ class AssistantPanelModel(
     /** The gateway's bots, to name the one answering above its replies; without them the panel says "Hermes". */
     private val bots: BotsApi? = null,
     private val profileRoster: ProfilesApi? = null,
+    /** A reply read aloud in the chat ends as the panel takes the microphone. */
+    readAloud: ReadAloudKeepAlive? = null,
     private val cropper: ScreenCropper = ScreenCropper { null },
 ) {
     private val scope = CoroutineScope(appScope.coroutineContext + SupervisorJob(appScope.coroutineContext[Job]))
@@ -156,7 +159,7 @@ class AssistantPanelModel(
     internal val speaker: StateFlow<ReplySpeaker?> = _speaker.asStateFlow()
 
     val composer = TextFieldState()
-    val voice = VoiceController(audio, recorder, player, scope, appScope, deviceDictation = deviceDictation)
+    val voice = VoiceController(audio, recorder, player, scope, appScope, deviceDictation = deviceDictation, readKeepAlive = readAloud)
 
     val connectionState get() = connection.state
 

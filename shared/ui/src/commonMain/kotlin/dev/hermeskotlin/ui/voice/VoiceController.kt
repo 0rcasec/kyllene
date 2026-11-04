@@ -251,7 +251,7 @@ class VoiceController(
         if (chatJob?.isActive == true) return
         cancelDictation()
         // The voice chat has the speaker now.
-        stopReading()
+        endReadingAnywhere()
         // Connecting while it checks for a live call: nothing listens yet, so Mute isn't offered until it does.
         _chat.value = VoiceChatState(VoicePhase.Connecting)
         room.clear()
@@ -1127,6 +1127,7 @@ class VoiceController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                progress?.pieceFails()
                 onError(e.message ?: getString(Res.string.voice_error_play_reply))
             } finally {
                 playing.value = false
@@ -1141,9 +1142,12 @@ class VoiceController(
      */
     fun readAloud(key: String, reply: String, gateway: GatewayUrl, profile: String?) {
         if (chatJob?.isActive == true || dictationJob?.isActive == true) return
-        stopReading()
         val text = readAloudText(reply)
-        if (text.isEmpty()) return
+        if (text.isEmpty()) return stopReading()
+        // The reply being read, if any, is let go only once this one is in its place (below): its end, which on the
+        // phone can come at once inside the cancel, then sees it was replaced and leaves the hold to this one.
+        val replaced = readingJob
+        val replacedRead = readNow
         _reading.value = ReadAloudState(key)
         // Held now, on the tap: Android only lets a playback service start from the foreground.
         away = false
@@ -1160,8 +1164,6 @@ class VoiceController(
             readKeepAlive?.show(media)
         }
         val read = Reading(progress)
-        readNow = read
-        progress.publish()
         val keptAs = "$gateway\n${profile.orEmpty()}\n$text"
         // Started once it's [readingJob], so its end can tell whether a newer one took over.
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -1170,9 +1172,6 @@ class VoiceController(
                 // The first thing that went wrong says why; what follows from it says less.
                 voice(text, gateway, profile, keptAs, progress) { if (error == null) error = it }
             } finally {
-                // Stopped while paused: the player lets go of the pause only now its voice has stopped, so it can't
-                // sound again for a moment, and before a newer reply plays (started after this ends).
-                if (read.paused) player.hold(false)
                 // Stopped, or another reply started: that one keeps its own state, and the hold.
                 if (readingJob === coroutineContext.job) {
                     readingJob = null
@@ -1186,15 +1185,42 @@ class VoiceController(
             }
         }
         readingJob = job
+        readNow = read
+        letGo(replaced, replacedRead)
+        progress.publish()
         job.start()
     }
 
     /** Stops the reply being read aloud, and clears why the last one couldn't be. */
     fun stopReading() {
-        readingJob?.cancel()
+        val job = readingJob
+        val read = readNow
         readingJob = null
         readNow = null
         _reading.value = ReadAloudState()
+        letGo(job, read)
+    }
+
+    /**
+     * Lets go of reading [read], no longer wanted: its [job] is cancelled, which stops its voice at once, and a pause
+     * it held is let go here and now, so a newer voice doesn't wait on it. Never later, from its job's end, which can
+     * come after a newer reading was paused in turn.
+     */
+    private fun letGo(job: Job?, read: Reading?) {
+        job?.cancel()
+        if (read?.paused == true) {
+            read.paused = false
+            player.hold(false)
+        }
+    }
+
+    /**
+     * Another voice is about to take the speaker or the microphone (a voice chat, a call, dictation): a reply read
+     * aloud ends first, this controller's or one another screen started ([ReadAloudKeepAlive.end]).
+     */
+    private fun endReadingAnywhere() {
+        stopReading()
+        readKeepAlive?.end()
     }
 
     /**
@@ -1233,7 +1259,7 @@ class VoiceController(
     ) {
         if (dictationJob?.isActive == true || chatJob?.isActive == true) return
         // The microphone would hear it.
-        stopReading()
+        endReadingAnywhere()
         _dictation.value = DictationState(recording = true)
         val device = deviceDictation?.takeIf { engine == DictationEngine.Device && it.available() }
         dictating = device

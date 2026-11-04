@@ -250,6 +250,7 @@ import com.composables.icons.lucide.RotateCw
 import com.composables.icons.lucide.SearchCheck
 import com.composables.icons.lucide.TriangleAlert
 import com.composables.icons.lucide.Users
+import com.composables.icons.lucide.Play
 import com.composables.icons.lucide.Plus
 import com.composables.icons.lucide.RefreshCw
 import com.composables.icons.lucide.Square
@@ -848,6 +849,7 @@ internal fun ChatView(
         LaunchedEffect(voiceOn) { if (!voiceOn) voiceFolded = false }
         // A reply read aloud plays to its end with the phone put down, and stops if it leaves the chat
         // (regenerated, or a reload that keys it anew), so its Stop is never gone while it plays.
+        // Not while paused: the screen can go dark until it plays on (screenStaysOn).
         KeepScreenOn(screenStaysOn(voiceChat, readAloud, LocalAppSettings.current))
         // A chat whose transcript hasn't loaded yet hasn't lost it.
         LaunchedEffect(readAloud.key, state.messages, state.historyLoaded) {
@@ -1108,6 +1110,7 @@ internal fun ChatView(
                                     readUpTo = readUpTo,
                                     onReadLatest = onReadLatest,
                                     reading = readAloud.key,
+                                    readingPaused = readAloud.paused,
                                     // The voice chat and dictation have the speaker and the microphone.
                                     canReadAloud = hasVoice && !voiceOn && !dictation.active,
                                     found = found,
@@ -1881,6 +1884,8 @@ private fun Messages(
     onReadLatest: (() -> Unit)? = null,
     /** The reply being read aloud, by its key. */
     reading: String? = null,
+    /** It's paused, from the media controls or here. */
+    readingPaused: Boolean = false,
     /** Replies offer Read aloud. */
     canReadAloud: Boolean = true,
     /** The message Find in chat is on, by its key, marked with an outline. */
@@ -2125,8 +2130,10 @@ private fun Messages(
                                     last = message.key == lastReply,
                                     unservable = unservable,
                                     reading = message.key == reading,
+                                    paused = message.key == reading && readingPaused,
                                     onReadAloud = if (canReadAloud) ({ text -> actions.readAloud(message.key, text) }) else null,
                                     onStopReading = actions::stopReading,
+                                    onPauseReading = actions::pauseReading,
                                 )
                             }
                             // An answer to another bot's message folds under it; never while it's still being written.
@@ -2803,9 +2810,13 @@ internal fun AssistantReply(
     unservable: List<GeneratedImage> = emptyList(),
     /** This reply is being read aloud: Stop shows in place of Read aloud. */
     reading: Boolean = false,
+    /** Its reading is paused: Paused and Play show in place of Stop. */
+    paused: Boolean = false,
     /** Reads the reply's text, as shown, aloud; null when it can't be now. */
     onReadAloud: ((String) -> Unit)? = null,
     onStopReading: () -> Unit = {},
+    /** Pauses the reading ([Boolean] true) or plays it on. */
+    onPauseReading: (Boolean) -> Unit = {},
 ) {
     val settings = LocalAppSettings.current
     val showReasoning = settings.showReasoning && message.reasoning.isNotBlank()
@@ -2952,6 +2963,10 @@ internal fun AssistantReply(
                     onBranch?.let { ReplyAction(Lucide.GitBranch, branchLabel, it, action) }
                     onRegenerate?.let { ReplyAction(Lucide.RefreshCw, regenerateLabel, it, action) }
                     when {
+                        reading && paused -> {
+                            Text("Paused", style = Theme[typography][caption], color = Theme[colors][textTertiary])
+                            ReplyAction(Lucide.Play, "Play on", { onPauseReading(false) }, action)
+                        }
                         reading -> ReplyAction(Lucide.Square, stopReadingLabel, onStopReading, action)
                         speakable && onReadAloud != null -> ReplyAction(Lucide.Volume2, readAloudLabel, { onReadAloud(text) }, action)
                     }

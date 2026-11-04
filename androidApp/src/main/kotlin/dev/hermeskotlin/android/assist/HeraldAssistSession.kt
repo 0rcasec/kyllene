@@ -35,6 +35,7 @@ import dev.hermeskotlin.core.bots.BotsApi
 import dev.hermeskotlin.core.profiles.ProfilesApi
 import dev.hermeskotlin.core.settings.SettingsStore
 import dev.hermeskotlin.core.voice.DeviceDictation
+import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.ui.assistant.AssistantPanel
 import dev.hermeskotlin.ui.assistant.AssistantPanelModel
 import kotlinx.coroutines.CoroutineScope
@@ -86,6 +87,7 @@ class HeraldAssistSession(context: Context) :
             deviceDictation = get<DeviceDictation>(),
             bots = get<BotsApi>(),
             profileRoster = get<ProfilesApi>(),
+            readAloud = get<ReadAloudKeepAlive>(),
         ) { region ->
             screenshot?.let { shot -> withContext(Dispatchers.Default) { runCatching { ScreenReader.crop(shot, region) }.getOrNull() } }
         }

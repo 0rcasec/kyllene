@@ -37,6 +37,11 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.CoroutineScope
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import dev.hermeskotlin.ui.JvmOnly
@@ -652,18 +657,101 @@ class VoiceControllerTest {
             onPause = null
         }
 
-        fun end() = onEnd?.invoke()
+        override fun end() {
+            onEnd?.invoke()
+        }
 
         fun pause(on: Boolean) = onPause?.invoke(on)
     }
 
-    /** [HeldPlayer] whose voice pauses ([SpeechPlayer.hold]), as the phone's does; [holds] says how it was held. */
-    private class PausablePlayer(val inner: HeldPlayer) : SpeechPlayer by inner {
+    /**
+     * [HeldPlayer] whose voice pauses ([SpeechPlayer.hold]), as the phone's does; [holds] says how it was held.
+     * [stopsAfterMs]: a clip cut off takes that long to finish stopping, so the reading's end comes late.
+     */
+    private class PausablePlayer(val inner: HeldPlayer, private val stopsAfterMs: Long = 0) : SpeechPlayer by inner {
         val holds = mutableListOf<Boolean>()
         override fun hold(on: Boolean): Boolean {
             holds += on
             return true
         }
+
+        override suspend fun play(audio: SpokenAudio) {
+            try {
+                inner.play(audio)
+            } catch (e: CancellationException) {
+                if (stopsAfterMs > 0) withContext(NonCancellable) { delay(stopsAfterMs) }
+                throw e
+            }
+        }
+    }
+
+    /** A paused reading the newer one replaced lets go of its pause at once, not when its end comes, late. */
+    @Test
+    fun aPausedNewerReadingStaysPausedWhenTheOldOnesEndComesLate() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true), stopsAfterMs = 500)
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = FakeReadKeeper())
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.inner.started.receive()
+        voice.pauseReading(true)
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        assertEquals(listOf(true, false), player.holds)
+        assertEquals("The second reply.", player.inner.started.receive())
+        voice.pauseReading(true)
+
+        // The first reading's end comes now; it doesn't touch the second one's pause.
+        advanceTimeBy(1_000)
+        assertEquals(listOf(true, false, true), player.holds)
+        assertEquals(ReadAloudState("r2", paused = true), voice.reading.value)
+    }
+
+    /**
+     * On the phone a tap's cancel ends the reading being read at once, inside the cancel (Dispatchers.Main.immediate,
+     * called from no coroutine): a newer reply still takes over the hold rather than letting it go and taking it anew.
+     */
+    @Test
+    fun aNewerReplyKeepsTheHoldWhenTheOldOneEndsAtOnce() = runTest {
+        val player = HeldPlayer(holds = true)
+        val keeper = FakeReadKeeper()
+        // Like Main.immediate from a tap: resumed in place, since the test body isn't running unconfined.
+        val immediate = CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler))
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, immediate, immediate, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.started.receive()
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        // The first one ended inside the call.
+        assertEquals(1, player.cut)
+        assertEquals(0, keeper.releases)
+        assertEquals("The second reply.", player.started.receive())
+        assertEquals(2, keeper.holds)
+        assertEquals(ReadAloudState("r2"), voice.reading.value)
+        voice.stopReading()
+        assertEquals(1, keeper.releases)
+    }
+
+    /**
+     * Another screen's voice (a call, the assistant's dictation) ends a reply read aloud in the chat, even a paused
+     * one, whose pause would otherwise hold that voice back on the shared player.
+     */
+    @Test
+    fun anotherScreensVoiceEndsAReadingPausedInTheChat() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val chat = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+        val panel = VoiceController(audio("hello", Requests()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        chat.readAloud("r1", "A long reply.", gateway, null)
+        player.inner.started.receive()
+        chat.pauseReading(true)
+        panel.startDictation(gateway, null) {}
+
+        assertEquals(ReadAloudState(), chat.reading.value)
+        assertEquals(listOf(true, false), player.holds)
+        testScheduler.runCurrent()
+        assertEquals(1, player.inner.cut)
+        assertEquals(1, keeper.releases)
+        panel.cancelDictation()
     }
 
     /** The media controls pause the reading where it is and play it on; the state and the controls say so. */

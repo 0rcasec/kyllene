@@ -28,6 +28,12 @@ interface ReadAloudKeepAlive : VoiceKeepAlive {
 
     /** Where the reading is, for the media controls' title and progress bar. */
     fun show(media: ReadAloudMedia) = Unit
+
+    /**
+     * Ends the reply being read aloud, wherever in the app it was started (the hold's onEnd), as its Stop does:
+     * another voice (a call, a voice chat, dictation) is about to take the speaker or the microphone.
+     */
+    fun end() = Unit
 }
 
 /** A reply read aloud as the media controls show it. */

@@ -146,6 +146,9 @@ interface ChatActions {
 
     fun stopReading() {}
 
+    /** Pauses the reply being read aloud where it is ([on]), or plays it on. */
+    fun pauseReading(on: Boolean) {}
+
     fun dismissReadAloudError() {}
 }
 

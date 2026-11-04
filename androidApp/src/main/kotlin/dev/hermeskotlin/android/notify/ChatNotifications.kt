@@ -255,8 +255,15 @@ class ChatNotifications(
     private fun mediaAction(icon: Int, title: String, intent: PendingIntent) =
         Notification.Action.Builder(Icon.createWithResource(context, icon), title, intent).build()
 
-    /** Shows the Read aloud notification anew, as its Pause turns to Play. */
-    fun postReadingAloud(notification: Notification) = post(null, READ_ALOUD_ID, notification)
+    /**
+     * Shows the Read aloud notification anew, as its Pause turns to Play. Posted even without the permission to post
+     * notifications: a media session's is exempt, as its first posting from the service is.
+     */
+    @SuppressLint("MissingPermission")
+    fun postReadingAloud(notification: Notification) = manager.notify(READ_ALOUD_ID, notification)
+
+    /** Opens the app where it was, for the Read aloud media controls. */
+    fun openAppIntent(): PendingIntent = openApp(null, null)
 
     fun postOngoing(connection: ConnectionState, pushAnywhere: Boolean = false) =
         post(null, WORKING_ID, ongoing(connection, pushAnywhere))

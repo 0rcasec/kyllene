@@ -69,6 +69,19 @@ class ReadAloudProgressTest {
         assertFalse(shown.last().waiting)
     }
 
+    /** A piece that couldn't play isn't counted: the bar waits where it was, rather than running on and back. */
+    @Test
+    fun aPieceThatFailsIsntCounted() {
+        val read = progress(chars = 140)
+        read.pieceStarts()
+        time += 3.seconds
+        read.pieceFails()
+        assertEquals(0L, read.positionMs)
+        assertTrue(shown.last().waiting)
+        time += 5.seconds
+        assertEquals(0L, read.positionMs)
+    }
+
     /** The bar never runs past its end, even when a piece plays slower than the estimate. */
     @Test
     fun theLengthIsNeverShorterThanWhatPlayed() {

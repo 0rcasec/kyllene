@@ -7,7 +7,8 @@ import kotlin.time.TimeSource
 /**
  * Where a reply read aloud is, for the media controls: the pieces played by their real length, the rest estimated
  * at the pace so far, or at [CHARS_PER_SECOND] before any piece has played. Time paused, or waiting for a piece to
- * be voiced, isn't counted. Each change goes to [show].
+ * be voiced, isn't counted; a piece's time includes the moment its player takes to get ready. It's an estimate
+ * throughout: later pieces don't exist yet. Each change goes to [show].
  */
 internal class ReadAloudProgress(
     private val title: String,
@@ -45,6 +46,14 @@ internal class ReadAloudProgress(
         stopClock()
         playedMs += pieceMs
         playedChars += chars
+        pieceMs = 0L
+        waiting = true
+        publish()
+    }
+
+    /** The piece couldn't play: its time isn't counted, and the bar waits for the next one where it was. */
+    fun pieceFails() {
+        since = null
         pieceMs = 0L
         waiting = true
         publish()

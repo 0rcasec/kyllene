@@ -207,11 +207,12 @@ internal fun label(state: VoiceChatState): String = when (state.phase) {
 }
 
 /**
- * The screen stays on while a reply is read aloud, so its Stop is there to the end, and through a voice chat unless
+ * The screen stays on while a reply is read aloud, so its Stop is there to the end (not while it's paused: the screen
+ * can go dark until it plays on), and through a voice chat unless
  * [AppSettings.voiceKeepScreenOn] is off, so it can be followed with the phone in a holder.
  */
 internal fun screenStaysOn(voiceChat: VoiceChatState, readAloud: ReadAloudState, settings: AppSettings) =
-    readAloud.key != null || voiceChat.phase != VoicePhase.Off && settings.voiceKeepScreenOn
+    readAloud.key != null && !readAloud.paused || voiceChat.phase != VoicePhase.Off && settings.voiceKeepScreenOn
 
 /** The chained chat has heard you: what's said so far can go now, without waiting for the pause. */
 internal fun canSendNow(state: VoiceChatState) = !state.live && state.phase == VoicePhase.Listening && state.hearing

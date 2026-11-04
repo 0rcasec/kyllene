@@ -10,6 +10,7 @@ import dev.hermeskotlin.core.settings.SettingsStore
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.DeviceLock
 import dev.hermeskotlin.core.voice.LiveCalls
+import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.VoiceKeepAlive
 import dev.hermeskotlin.core.voice.VoiceRecorder
@@ -66,8 +67,13 @@ class PhoneCallModel(
     keepAlive: VoiceKeepAlive,
     liveCalls: LiveCalls,
     deviceLock: DeviceLock,
+    /** A reply read aloud in the chat ends as the call takes the speaker, even one held up out of sight, or paused. */
+    readAloud: ReadAloudKeepAlive,
 ) : ViewModel() {
-    val voice = VoiceController(audio, recorder, player, viewModelScope, appScope, keepAlive, liveCalls = liveCalls, deviceLock = deviceLock)
+    val voice = VoiceController(
+        audio, recorder, player, viewModelScope, appScope, keepAlive,
+        liveCalls = liveCalls, deviceLock = deviceLock, readKeepAlive = readAloud,
+    )
 
     private val _state = MutableStateFlow<PhoneCallState?>(null)
     val state: StateFlow<PhoneCallState?> = _state.asStateFlow()
