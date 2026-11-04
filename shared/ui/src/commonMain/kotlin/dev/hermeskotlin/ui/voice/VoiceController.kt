@@ -284,20 +284,22 @@ class VoiceController(
             },
         ) == true
         val job = scope.launch {
-            withTimeoutOrNull(WIND_DOWN_MS) { windingDown.joinAll() }
-            val ringing = if (ringback) launch {
-                try {
-                    while (isActive) {
-                        player.playRingback()
-                        delay(3_000)
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // A connection cue must never prevent the call.
-                }
-            } else null
+            var ringing: Job? = null
             try {
+                // Inside the try, so an End while it waits still puts the panel back.
+                withTimeoutOrNull(WIND_DOWN_MS) { windingDown.joinAll() }
+                ringing = if (ringback) launch {
+                    try {
+                        while (isActive) {
+                            player.playRingback()
+                            delay(3_000)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // A connection cue must never prevent the call.
+                    }
+                } else null
                 if (startLive(session, gateway, profile, opener) { ringing?.cancelAndJoin() }) return@launch
                 ringing?.cancelAndJoin()
                 converseChained(session, gateway, profile, pauseMs, opener, asCall)
@@ -315,10 +317,10 @@ class VoiceController(
         VoiceChats.started(job, this, ::stopChat)
         job.invokeOnCompletion {
             VoiceChats.ended(job)
-            // A newer chat may already hold it again.
+            // A newer chat may already hold it again, here or on another screen (the call service is one for all).
             if (chatJob === job || chatJob == null) {
                 held = false
-                keepAlive?.release()
+                if (!VoiceChats.any) keepAlive?.release()
             }
         }
     }

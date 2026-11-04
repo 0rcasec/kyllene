@@ -1,5 +1,6 @@
 package dev.hermeskotlin.ui.voice
 
+import dev.hermeskotlin.core.voice.VoiceKeepAlive
 import dev.hermeskotlin.core.auth.AuthApi
 import dev.hermeskotlin.core.auth.PersistentCookiesStorage
 import dev.hermeskotlin.core.chat.ChatSession
@@ -1561,5 +1562,80 @@ class VoiceControllerTest {
         testScheduler.runCurrent()
         assertEquals(1, player.cut)
         call.stopChat()
+    }
+
+    /** The one call service every screen's chat holds: up or not. */
+    private class SharedKeeper : VoiceKeepAlive {
+        var holding = false
+        override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean {
+            holding = true
+            return true
+        }
+
+        override fun release() {
+            holding = false
+        }
+    }
+
+    /** A chat ended by another screen's leaves the one call service up for the newer chat, which lets it go at its end. */
+    @Test
+    fun aChatEndedByAnotherScreensLeavesItTheCallService() = runTest {
+        val keeper = SharedKeeper()
+        val first = RoomRecorder(emptyList())
+        val second = RoomRecorder(emptyList())
+        val one = VoiceController(audio("unused", Requests()), first, FakePlayer(), backgroundScope, backgroundScope, keepAlive = keeper)
+        val two = VoiceController(audio("unused", Requests()), second, FakePlayer(), backgroundScope, backgroundScope, keepAlive = keeper)
+
+        one.startChat(offlineSession(), gateway, null)
+        first.heardRoom.await()
+        two.startChat(offlineSession(), gateway, null)
+        one.chat.first { it.phase == VoicePhase.Off }
+        second.heardRoom.await()
+        testScheduler.runCurrent()
+        assertTrue(keeper.holding)
+
+        two.stopChat()
+        two.chat.first { it.phase == VoicePhase.Off }
+        testScheduler.runCurrent()
+        assertFalse(keeper.holding)
+    }
+
+    /** Listens until cancelled, then takes [stopMs] to let the microphone go. */
+    private class SlowToStopRecorder(private val stopMs: Long) : VoiceRecorder {
+        val listening = CompletableDeferred<Unit>()
+        override suspend fun record(activity: VoiceActivity, onLevel: (Float) -> Unit, onSpeech: () -> Unit): Recording {
+            listening.complete(Unit)
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) { delay(stopMs) }
+            }
+        }
+
+        override fun finish() = Unit
+    }
+
+    /** End while a new chat waits for the last one to let go: the chat is Off, not left on Connecting. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun endingAChatWhileItWaitsForTheLastOnePutsItOff() = runTest {
+        val slow = SlowToStopRecorder(stopMs = 1_000)
+        val one = VoiceController(audio("unused", Requests()), slow, FakePlayer(), backgroundScope, backgroundScope)
+        val two = VoiceController(audio("unused", Requests()), RoomRecorder(emptyList()), FakePlayer(), backgroundScope, backgroundScope)
+
+        one.startChat(offlineSession(), gateway, null)
+        slow.listening.await()
+        two.startChat(offlineSession(), gateway, null)
+        testScheduler.runCurrent()
+        // Still waiting: the first one takes a second to let the microphone go.
+        assertEquals(VoicePhase.Connecting, two.chat.value.phase)
+        two.stopChat()
+        testScheduler.runCurrent()
+
+        assertEquals(VoicePhase.Off, two.chat.value.phase)
+        testScheduler.advanceTimeBy(2_000)
+        testScheduler.runCurrent()
+        assertEquals(VoicePhase.Off, one.chat.value.phase)
+        assertEquals(VoicePhase.Off, two.chat.value.phase)
     }
 }
