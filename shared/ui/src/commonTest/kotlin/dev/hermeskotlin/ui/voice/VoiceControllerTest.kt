@@ -13,6 +13,7 @@ import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
+import dev.hermeskotlin.core.voice.ReadAloudMedia
 import dev.hermeskotlin.core.voice.Recording
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.SpokenAudio
@@ -41,6 +42,7 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import dev.hermeskotlin.ui.JvmOnly
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import dev.hermeskotlin.ui.resources.Res
@@ -621,23 +623,116 @@ class VoiceControllerTest {
         assertEquals(1, player.cut)
     }
 
-    /** Holds Read aloud up out of sight, as the playback service does; [end] is its notification's Stop. */
+    /**
+     * Holds Read aloud up out of sight, as the playback service does; [end] is its notification's Stop, [pause] its
+     * media controls' Pause and Play, and [shown] what they showed.
+     */
     private class FakeReadKeeper(private val grants: Boolean = true) : ReadAloudKeepAlive {
         var holds = 0
         var releases = 0
+        val shown = mutableListOf<ReadAloudMedia>()
         private var onEnd: (() -> Unit)? = null
-        override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean {
+        private var onPause: ((Boolean) -> Unit)? = null
+        override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean = hold(onEnd, onLost) {}
+
+        override fun hold(onEnd: () -> Unit, onLost: () -> Unit, onPause: (Boolean) -> Unit): Boolean {
             holds++
             this.onEnd = onEnd
+            this.onPause = onPause
             return grants
+        }
+
+        override fun show(media: ReadAloudMedia) {
+            shown += media
         }
 
         override fun release() {
             releases++
             onEnd = null
+            onPause = null
         }
 
         fun end() = onEnd?.invoke()
+
+        fun pause(on: Boolean) = onPause?.invoke(on)
+    }
+
+    /** [HeldPlayer] whose voice pauses ([SpeechPlayer.hold]), as the phone's does; [holds] says how it was held. */
+    private class PausablePlayer(val inner: HeldPlayer) : SpeechPlayer by inner {
+        val holds = mutableListOf<Boolean>()
+        override fun hold(on: Boolean): Boolean {
+            holds += on
+            return true
+        }
+    }
+
+    /** The media controls pause the reading where it is and play it on; the state and the controls say so. */
+    @Test
+    fun theMediaControlsPauseAndPlayOn() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.inner.started.receive()
+        assertEquals("A long reply.", keeper.shown.first().title)
+        assertTrue(keeper.shown.last().playing)
+        assertFalse(keeper.shown.last().waiting)
+
+        keeper.pause(true)
+        assertEquals(ReadAloudState("r1", paused = true), voice.reading.value)
+        assertEquals(listOf(true), player.holds)
+        assertFalse(keeper.shown.last().playing)
+        // Pause twice (a headset and the screen) holds once.
+        keeper.pause(true)
+        assertEquals(listOf(true), player.holds)
+
+        keeper.pause(false)
+        assertEquals(ReadAloudState("r1"), voice.reading.value)
+        assertEquals(listOf(true, false), player.holds)
+        assertTrue(keeper.shown.last().playing)
+        assertEquals(0, player.inner.cut)
+    }
+
+    /** Stopped while paused, the player lets go of the pause once its voice stopped, so the next reply plays. */
+    @Test
+    fun stoppedWhilePausedTheNextReplyPlays() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.inner.started.receive()
+        voice.pauseReading(true)
+        keeper.end()
+        assertEquals(ReadAloudState(), voice.reading.value)
+        testScheduler.runCurrent()
+        assertEquals(1, player.inner.cut)
+        assertEquals(listOf(true, false), player.holds)
+
+        // Nothing is read now: the controls can't pause it.
+        voice.pauseReading(true)
+        assertEquals(listOf(true, false), player.holds)
+
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        assertEquals("The second reply.", player.inner.started.receive())
+        assertEquals(ReadAloudState("r2"), voice.reading.value)
+    }
+
+    /** A newer reply replaces a paused one: the pause is let go before the newer one plays. */
+    @Test
+    fun aNewerReplyReplacesAPausedOne() = runTest {
+        val player = PausablePlayer(HeldPlayer(holds = true))
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = FakeReadKeeper())
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.inner.started.receive()
+        voice.pauseReading(true)
+        voice.readAloud("r2", "The second reply.", gateway, null)
+
+        assertEquals("The second reply.", player.inner.started.receive())
+        assertEquals(listOf(true, false), player.holds)
+        assertEquals(ReadAloudState("r2"), voice.reading.value)
     }
 
     /** Read aloud only plays, so held up it goes on when the app goes out of sight, and lets go once it's done. */

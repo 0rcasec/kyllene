@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
+import android.media.session.MediaSession
+import android.os.Build
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -223,17 +226,37 @@ class ChatNotifications(
         .addAction(0, str(R.string.notification_voice_end), end)
         .build()
 
-    /** The ongoing notification of a reply read aloud out of sight ([ReadAloudService]): back to it, or [stop] it. */
-    fun readingAloud(stop: PendingIntent): Notification = base(CHANNEL_READ_ALOUD)
-        .setContentTitle("Read aloud")
-        .setContentText("Reading a reply")
-        .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+    /**
+     * The media notification of a reply read aloud out of sight ([ReadAloudService]), which puts it in the phone's
+     * media controls (Quick Settings, the lock screen) through [session]: back to it, [playPause] it, or [stop] it.
+     * [title]: the start of the reply. The platform's own MediaStyle (Android 8+ here), so no media library.
+     */
+    fun readingAloud(
+        session: MediaSession.Token?,
+        title: String?,
+        playing: Boolean,
+        playPause: PendingIntent,
+        stop: PendingIntent,
+    ): Notification = Notification.Builder(context, CHANNEL_READ_ALOUD)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setColor(ContextCompat.getColor(context, R.color.notification_accent))
+        .setContentIntent(openApp(null, null))
+        .setContentTitle(title ?: "Read aloud")
+        .setContentText("Read aloud")
+        .setCategory(Notification.CATEGORY_TRANSPORT)
         .setOngoing(true)
-        .setAutoCancel(false)
-        .setSilent(true)
-        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-        .addAction(0, "Stop", stop)
+        .setOnlyAlertOnce(true)
+        .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE) }
+        .addAction(mediaAction(if (playing) R.drawable.ic_media_pause else R.drawable.ic_media_play, if (playing) "Pause" else "Play", playPause))
+        .addAction(mediaAction(R.drawable.ic_media_stop, "Stop", stop))
+        .setStyle(Notification.MediaStyle().also { style -> session?.let { style.setMediaSession(it) } }.setShowActionsInCompactView(0, 1))
         .build()
+
+    private fun mediaAction(icon: Int, title: String, intent: PendingIntent) =
+        Notification.Action.Builder(Icon.createWithResource(context, icon), title, intent).build()
+
+    /** Shows the Read aloud notification anew, as its Pause turns to Play. */
+    fun postReadingAloud(notification: Notification) = post(null, READ_ALOUD_ID, notification)
 
     fun postOngoing(connection: ConnectionState, pushAnywhere: Boolean = false) =
         post(null, WORKING_ID, ongoing(connection, pushAnywhere))

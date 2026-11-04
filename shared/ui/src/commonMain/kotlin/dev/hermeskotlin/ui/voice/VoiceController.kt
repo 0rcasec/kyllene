@@ -77,6 +77,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.TimeSource
 
 enum class VoicePhase { Off, Connecting, Listening, Transcribing, Thinking, Speaking }
 
@@ -129,6 +130,8 @@ data class ReadAloudState(
     val key: String? = null,
     /** Why the last reply couldn't be read. */
     val error: String? = null,
+    /** Paused where it was, from the media controls. */
+    val paused: Boolean = false,
 )
 
 /**
@@ -161,6 +164,8 @@ class VoiceController(
     private val deviceLock: DeviceLock = DeviceLock.None,
     /** Keeps a reply being read aloud going with the screen off or another app in front. */
     private val readKeepAlive: ReadAloudKeepAlive? = null,
+    /** Times what Read aloud has played, for the media controls' progress bar. */
+    private val time: TimeSource = TimeSource.Monotonic,
     private val liveCalls: LiveCalls? = null,
 ) {
     private val _chat = MutableStateFlow(VoiceChatState())
@@ -194,6 +199,8 @@ class VoiceController(
     private var voicedUntilAsked = false
     private var dictationJob: Job? = null
     private var readingJob: Job? = null
+    /** The reply read aloud now, while [readingJob] reads it. */
+    private var readNow: Reading? = null
     /** The recognizer the dictation in progress listens with; null when the gateway transcribes it. */
     private var dictating: DeviceDictation? = null
     /**
@@ -1087,16 +1094,17 @@ class VoiceController(
      * Reads [text] aloud piece by piece, synthesizing the next piece while the current one plays. [onError] hears
      * what went wrong: a piece the gateway couldn't voice ends it, one the player couldn't play is passed over.
      * [keptAs]: the pieces already voiced under it in [readAloudVoices] play again as they are, and new ones are kept,
-     * each by its own words.
+     * each by its own words. [progress] hears each piece start and end.
      */
     private suspend fun voice(
         text: String,
         gateway: GatewayUrl,
         profile: String?,
         keptAs: String? = null,
+        progress: ReadAloudProgress? = null,
         onError: (String) -> Unit,
     ) = coroutineScope {
-        val clips = Channel<SpokenAudio>(capacity = 1)
+        val clips = Channel<Pair<String, SpokenAudio>>(capacity = 1)
         launch {
             for (chunk in speechChunks(text)) {
                 val clip = keptAs?.let { readAloudVoices.piece(it, chunk) } ?: when (val result = audio.speak(gateway, chunk, profile)) {
@@ -1106,14 +1114,16 @@ class VoiceController(
                         break
                     }
                 }
-                clips.send(clip)
+                clips.send(chunk to clip)
             }
             clips.close()
         }
-        for (clip in clips) {
+        for ((chunk, clip) in clips) {
             try {
                 playing.value = true
+                progress?.pieceStarts()
                 player.play(clip)
+                progress?.pieceEnds(chunk.length)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1144,20 +1154,31 @@ class VoiceController(
                 // Refused after the app already went away: nothing keeps it playing there.
                 if (away) stopReading()
             },
+            onPause = ::pauseReading,
         ) == true
+        val progress = ReadAloudProgress(ReadAloudProgress.title(text), speechChunks(text).sumOf { it.length }, time) { media ->
+            readKeepAlive?.show(media)
+        }
+        val read = Reading(progress)
+        readNow = read
+        progress.publish()
         val keptAs = "$gateway\n${profile.orEmpty()}\n$text"
         // Started once it's [readingJob], so its end can tell whether a newer one took over.
         val job = scope.launch(start = CoroutineStart.LAZY) {
             var error: String? = null
             try {
                 // The first thing that went wrong says why; what follows from it says less.
-                voice(text, gateway, profile, keptAs) { if (error == null) error = it }
+                voice(text, gateway, profile, keptAs, progress) { if (error == null) error = it }
             } finally {
+                // Stopped while paused: the player lets go of the pause only now its voice has stopped, so it can't
+                // sound again for a moment, and before a newer reply plays (started after this ends).
+                if (read.paused) player.hold(false)
                 // Stopped, or another reply started: that one keeps its own state, and the hold.
                 if (readingJob === coroutineContext.job) {
                     readingJob = null
                     _reading.value = ReadAloudState(error = error)
                 }
+                if (readNow === read) readNow = null
                 if (readingJob == null) {
                     readHeld = false
                     readKeepAlive?.release()
@@ -1172,7 +1193,26 @@ class VoiceController(
     fun stopReading() {
         readingJob?.cancel()
         readingJob = null
+        readNow = null
         _reading.value = ReadAloudState()
+    }
+
+    /**
+     * Pauses the reply being read aloud where it is ([on]), mid-word, or plays it on from there; from the media
+     * controls. A piece voiced meanwhile waits for it.
+     */
+    fun pauseReading(on: Boolean) {
+        val read = readNow ?: return
+        if (read.paused == on) return
+        read.paused = on
+        player.hold(on)
+        read.progress.pause(on)
+        _reading.update { it.copy(paused = on) }
+    }
+
+    /** A reply being read aloud: where it is, and whether it's paused. */
+    private class Reading(val progress: ReadAloudProgress) {
+        var paused = false
     }
 
     fun dismissReadAloudError() = _reading.update { it.copy(error = null) }
