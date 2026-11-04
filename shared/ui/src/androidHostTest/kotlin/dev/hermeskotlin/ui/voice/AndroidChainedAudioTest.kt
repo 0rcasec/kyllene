@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Looper
+import dev.hermeskotlin.core.voice.AndroidCallAudio
 import dev.hermeskotlin.core.voice.AndroidSpeechPlayer
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +29,7 @@ class AndroidChainedAudioTest {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE), speaker))
         manager.mode = AudioManager.MODE_NORMAL
-        val close = AndroidSpeechPlayer(context).chainedChatAudio()
+        val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
         assertEquals(AudioManager.MODE_IN_COMMUNICATION, manager.mode)
         assertEquals(speaker, manager.communicationDevice)
         close()
@@ -44,7 +45,7 @@ class AndroidChainedAudioTest {
             shadowOf(manager).setOutputDevices(listOf(speaker, device(type)))
             shadowOf(manager).setAvailableCommunicationDevices(listOf(speaker))
             manager.mode = AudioManager.MODE_NORMAL
-            val close = AndroidSpeechPlayer(context).chainedChatAudio()
+            val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
             assertEquals(AudioManager.MODE_NORMAL, manager.mode)
             assertNull(manager.communicationDevice)
             close()
@@ -58,7 +59,7 @@ class AndroidChainedAudioTest {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(device(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)))
         manager.mode = AudioManager.MODE_NORMAL
-        val close = AndroidSpeechPlayer(context).chainedChatAudio()
+        val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
         assertEquals(AudioManager.MODE_NORMAL, manager.mode)
         assertNull(manager.communicationDevice)
         close()
@@ -69,7 +70,7 @@ class AndroidChainedAudioTest {
     fun aStaleCloseCannotRestoreOverANewerChat() {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(speaker))
-        val player = AndroidSpeechPlayer(context)
+        val player = AndroidSpeechPlayer(context, AndroidCallAudio(context))
         manager.mode = AudioManager.MODE_NORMAL
         val first = player.chainedChatAudio()
         val second = player.chainedChatAudio()
@@ -86,7 +87,7 @@ class AndroidChainedAudioTest {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(speaker))
         manager.mode = AudioManager.MODE_NORMAL
-        val close = AndroidSpeechPlayer(context).chainedChatAudio()
+        val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
         assertEquals(AudioManager.MODE_IN_COMMUNICATION, manager.mode)
 
         shadowOf(manager).addOutputDevice(headphones, true)
@@ -111,7 +112,7 @@ class AndroidChainedAudioTest {
     fun aChatThatEndsFirstLeavesTheOtherChatsRoute() {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(speaker))
-        val player = AndroidSpeechPlayer(context)
+        val player = AndroidSpeechPlayer(context, AndroidCallAudio(context))
         manager.mode = AudioManager.MODE_NORMAL
         val first = player.chainedChatAudio()
         val second = player.chainedChatAudio()
@@ -127,7 +128,7 @@ class AndroidChainedAudioTest {
         shadowOf(manager).setOutputDevices(listOf(speaker))
         shadowOf(manager).setAvailableCommunicationDevices(listOf(speaker))
         manager.mode = AudioManager.MODE_IN_COMMUNICATION
-        AndroidSpeechPlayer(context).chainedChatAudio()()
+        AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()()
         assertEquals(AudioManager.MODE_IN_COMMUNICATION, manager.mode)
         assertNull(manager.communicationDevice)
     }
@@ -138,7 +139,7 @@ class AndroidChainedAudioTest {
     fun olderAndroidRestoresItsSpeakerphoneSetting() {
         manager.mode = AudioManager.MODE_NORMAL
         manager.isSpeakerphoneOn = false
-        val close = AndroidSpeechPlayer(context).chainedChatAudio()
+        val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
         assertEquals(true, manager.isSpeakerphoneOn)
         close()
         assertEquals(false, manager.isSpeakerphoneOn)
@@ -152,7 +153,7 @@ class AndroidChainedAudioTest {
         shadowOf(manager).setOutputDevices(listOf(device(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER), device(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP)))
         manager.mode = AudioManager.MODE_NORMAL
         manager.isSpeakerphoneOn = false
-        val close = AndroidSpeechPlayer(context).chainedChatAudio()
+        val close = AndroidSpeechPlayer(context, AndroidCallAudio(context)).chainedChatAudio()
         assertEquals(false, manager.isSpeakerphoneOn)
         assertEquals(AudioManager.MODE_NORMAL, manager.mode)
         close()
