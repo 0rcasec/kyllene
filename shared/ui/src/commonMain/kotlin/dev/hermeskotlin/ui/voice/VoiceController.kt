@@ -1146,6 +1146,12 @@ class VoiceController(
      */
     fun readAloud(key: String, reply: String, gateway: GatewayUrl, profile: String?) {
         if (chatJob?.isActive == true || dictationJob?.isActive == true) return
+        // Another screen's call has the speaker (the phone call screen's chat, or a GPT-Live call): a reading would
+        // play as part of the call and pause and duck its voice.
+        if (keepAlive?.holding == true) {
+            _reading.value = ReadAloudState(error = "A call is on.")
+            return
+        }
         val text = readAloudText(reply)
         if (text.isEmpty()) return stopReading()
         // The reply being read, if any, is let go only once this one is in its place (below): its end, which on the

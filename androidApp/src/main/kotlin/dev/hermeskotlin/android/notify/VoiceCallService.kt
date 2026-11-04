@@ -76,7 +76,7 @@ class VoiceCallKeeper(private val context: Context) : VoiceKeepAlive {
     private var wanted = false
 
     /** A voice chat or a call is on, holding the microphone. */
-    val holding: Boolean get() = wanted
+    override val holding: Boolean get() = wanted
     /** The service is in the foreground, so it may be stopped. */
     private var foreground = false
 

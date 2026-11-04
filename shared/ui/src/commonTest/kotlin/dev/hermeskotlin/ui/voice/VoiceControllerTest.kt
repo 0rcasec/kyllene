@@ -21,6 +21,7 @@ import dev.hermeskotlin.core.voice.Recording
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.SpokenAudio
 import dev.hermeskotlin.core.voice.VoiceActivity
+import dev.hermeskotlin.core.voice.VoiceKeepAlive
 import dev.hermeskotlin.core.voice.VoiceRecorder
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -1415,6 +1416,32 @@ class VoiceControllerTest {
         assertEquals(1, keeper.abandons)
         testScheduler.runCurrent()
         assertEquals(1, player.inner.cut)
+        assertEquals(emptyList(), player.holds)
+    }
+
+    /** The voice chat's keeper while another screen's call holds it. */
+    private class HeldKeepAlive(override val holding: Boolean) : VoiceKeepAlive {
+        override fun hold(onEnd: () -> Unit, onLost: () -> Unit) = true
+        override fun release() = Unit
+    }
+
+    /** A call on another screen has the speaker: Read aloud doesn't start under it, and says why. */
+    @Test
+    fun readAloudDoesntStartUnderAnotherScreensCall() = runTest {
+        val player = PausablePlayer(HeldPlayer())
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(
+            voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope,
+            keepAlive = HeldKeepAlive(holding = true), readKeepAlive = keeper,
+        )
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+
+        assertEquals(ReadAloudState(error = "A call is on."), voice.reading.value)
+        assertEquals(0, keeper.holds)
+        assertEquals(0, keeper.requests)
+        testScheduler.runCurrent()
+        assertTrue(player.inner.started.isEmpty)
         assertEquals(emptyList(), player.holds)
     }
 }

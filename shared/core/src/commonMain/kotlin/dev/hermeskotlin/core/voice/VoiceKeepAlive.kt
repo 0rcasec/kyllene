@@ -13,6 +13,9 @@ interface VoiceKeepAlive {
     fun hold(onEnd: () -> Unit, onLost: () -> Unit = {}): Boolean
 
     fun release()
+
+    /** A voice chat or a call holds it now, from any screen. */
+    val holding: Boolean get() = false
 }
 
 /**
