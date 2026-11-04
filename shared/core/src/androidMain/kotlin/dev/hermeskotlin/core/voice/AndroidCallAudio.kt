@@ -81,11 +81,20 @@ class AndroidCallAudio(context: Context) : CallAudio {
         private set
 
     /**
+     * The chats holding it now. A chat ended and another started at once (End, then Start) can overlap: the newer
+     * one holds before the older one's wind-down releases, and that release mustn't unroute the newer one's call.
+     */
+    private var holders = 0
+
+    /**
      * False, unrouted again, when Android refuses the call's device or it doesn't take the sound in time (a car's
      * call channel that won't open): the voice chat then plays like media, which still reaches it.
      */
     override suspend fun hold(): Boolean {
-        if (on) return true
+        if (on) {
+            holders++
+            return true
+        }
         val device = try {
             route.route()
         } catch (_: Exception) {
@@ -93,6 +102,7 @@ class AndroidCallAudio(context: Context) : CallAudio {
             return false
         }
         on = true
+        holders = 1
         val reached = try {
             // What's played or said before the car's call channel opens is lost.
             device == null || !route.refused && withTimeoutOrNull(ROUTE_WAIT_MS) {
@@ -112,6 +122,7 @@ class AndroidCallAudio(context: Context) : CallAudio {
 
     override fun release() {
         if (!on) return
+        if (--holders > 0) return
         on = false
         microphone = null
         route.unroute()
