@@ -13,6 +13,7 @@ import dev.hermeskotlin.core.sessions.SessionsApi
 import dev.hermeskotlin.core.storage.InMemoryKeyValueStore
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.BargeIn
+import dev.hermeskotlin.core.voice.CallAudio
 import dev.hermeskotlin.core.voice.Recording
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.SpeechStream
@@ -266,6 +267,9 @@ class StreamedSpeechTest {
         config: String = """{"ok":true}""",
         /** Runs as each recording goes to be written down, by its number from 1. */
         transcribing: suspend (Int) -> Unit = {},
+        /** Plays the chat as a call where [asCall] asks for it. */
+        callAudio: CallAudio = CallAudio.None,
+        asCall: Boolean = false,
         streams: () -> SpeechStream?,
     ): Setup {
         val spoken = mutableListOf<String>()
@@ -297,8 +301,11 @@ class StreamedSpeechTest {
         connection.state.first { it is ConnectionState.Connected }
         val session = ChatSession(gateway, null, null, connection, SessionsApi(client), backgroundScope)
         session.start()
-        val voice = VoiceController(AudioApi(client), recorder, player, backgroundScope, backgroundScope, speechStreams = { _, _ -> streams() })
-        voice.startChat(session, gateway, "rin")
+        val voice = VoiceController(
+            AudioApi(client), recorder, player, backgroundScope, backgroundScope, speechStreams = { _, _ -> streams() },
+            callAudio = callAudio,
+        )
+        voice.startChat(session, gateway, "rin", asCall = asCall)
         socket.submits.first { it.isNotEmpty() }
         return Setup(socket, voice, player, spoken)
     }
@@ -311,6 +318,50 @@ class StreamedSpeechTest {
         setup.voice.stopChat()
         assertFalse(player.audioOpen)
         yield()
+        assertFalse(player.audioOpen)
+    }
+
+    /** Call audio for the chat: [takes] is whether the car or headset took the call in time. */
+    private class FakeCallAudio(private val takes: Boolean) : CallAudio {
+        var held = 0
+        var released = 0
+        override suspend fun hold(): Boolean {
+            held++
+            return takes
+        }
+
+        override fun release() {
+            released++
+        }
+    }
+
+    /** One owner routes a chat: call audio that took has it, so the speaker's call routing stays shut. */
+    @Test
+    fun callAudioThatTookOwnsTheChatsRoute() = runTest {
+        val player = Player()
+        val calls = FakeCallAudio(takes = true)
+        val setup = chat(player = player, callAudio = calls, asCall = true) { Stream() }
+
+        assertEquals(1, calls.held)
+        assertFalse(player.audioOpen)
+        setup.voice.stopChat()
+        setup.voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(1, calls.released)
+        assertFalse(player.audioOpen)
+    }
+
+    /** A car that won't take the call in time: the speaker's call routing has the chat instead. */
+    @Test
+    fun callAudioThatWontTakeLeavesTheRouteToTheSpeaker() = runTest {
+        val player = Player()
+        val calls = FakeCallAudio(takes = false)
+        val setup = chat(player = player, callAudio = calls, asCall = true) { Stream() }
+
+        assertEquals(1, calls.held)
+        assertTrue(player.audioOpen)
+        setup.voice.stopChat()
+        setup.voice.chat.first { it.phase == VoicePhase.Off }
+        assertEquals(0, calls.released)
         assertFalse(player.audioOpen)
     }
 
