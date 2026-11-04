@@ -104,6 +104,11 @@ class ChatNotifications(
                     .setDescription(str(R.string.channel_voice_description))
                     .setShowBadge(false)
                     .build(),
+                NotificationChannelCompat.Builder(CHANNEL_READ_ALOUD, NotificationManagerCompat.IMPORTANCE_LOW)
+                    .setName("Read aloud")
+                    .setDescription("Shown while a reply is read aloud with the screen off or another app open.")
+                    .setShowBadge(false)
+                    .build(),
                 NotificationChannelCompat.Builder(CHANNEL_CALLS, NotificationManagerCompat.IMPORTANCE_HIGH)
                     .setName(str(R.string.channel_calls_name))
                     .setDescription(str(R.string.channel_calls_description))
@@ -216,6 +221,18 @@ class ChatNotifications(
         .setSilent(true)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .addAction(0, str(R.string.notification_voice_end), end)
+        .build()
+
+    /** The ongoing notification of a reply read aloud out of sight ([ReadAloudService]): back to it, or [stop] it. */
+    fun readingAloud(stop: PendingIntent): Notification = base(CHANNEL_READ_ALOUD)
+        .setContentTitle("Read aloud")
+        .setContentText("Reading a reply")
+        .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+        .setOngoing(true)
+        .setAutoCancel(false)
+        .setSilent(true)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .addAction(0, "Stop", stop)
         .build()
 
     fun postOngoing(connection: ConnectionState, pushAnywhere: Boolean = false) =
@@ -774,7 +791,7 @@ class ChatNotifications(
         unreadBotMessages.clear()
         unreadRoomLines.clear()
         // A call stays: Herald starting behind its full screen isn't the user looking ([hangUp] is).
-        manager.activeNotifications.filter { it.id != WORKING_ID && it.id != VOICE_ID && it.id != CALL_ID }.forEach { manager.cancel(it.tag, it.id) }
+        manager.activeNotifications.filter { it.id != WORKING_ID && it.id != VOICE_ID && it.id != CALL_ID && it.id != READ_ALOUD_ID }.forEach { manager.cancel(it.tag, it.id) }
     }
 
     /** Herald is in front: every call ringing is answered by looking, and posts no notification later. */
@@ -831,6 +848,7 @@ class ChatNotifications(
         /** With [EXTRA_OPEN_INBOX] on an Inbox notification's Mark read, and in its extras: the gateway the run is of. */
         const val EXTRA_INBOX_GATEWAY = "inbox_gateway"
         const val CALL_ID = 9
+        const val READ_ALOUD_ID = 10
 
         /** On an Answer's launch intent: the request whose call was answered. */
         const val EXTRA_ANSWERED_CALL = "answered_call"
@@ -854,6 +872,7 @@ class ChatNotifications(
         private const val CHANNEL_REPLIES = "replies"
         private const val CHANNEL_BOTS = "bots"
         private const val CHANNEL_VOICE = "voice"
+        private const val CHANNEL_READ_ALOUD = "read_aloud"
         private const val CHANNEL_INBOX = "inbox"
         private const val CHANNEL_INBOX_FAILED = "inbox_failed"
 

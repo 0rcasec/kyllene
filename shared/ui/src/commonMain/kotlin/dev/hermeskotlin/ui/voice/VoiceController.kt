@@ -20,6 +20,7 @@ import dev.hermeskotlin.core.voice.BargeInSettings
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
 import dev.hermeskotlin.core.voice.LiveCalls
+import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.ReadAloudVoices
 import dev.hermeskotlin.core.voice.InMemoryReadAloudVoices
 import dev.hermeskotlin.core.voice.VoiceKeepAlive
@@ -158,6 +159,8 @@ class VoiceController(
     private val speechStreams: SpeechStreams? = null,
     /** An approval is only taken by voice while the phone is unlocked. */
     private val deviceLock: DeviceLock = DeviceLock.None,
+    /** Keeps a reply being read aloud going with the screen off or another app in front. */
+    private val readKeepAlive: ReadAloudKeepAlive? = null,
     private val liveCalls: LiveCalls? = null,
 ) {
     private val _chat = MutableStateFlow(VoiceChatState())
@@ -200,6 +203,8 @@ class VoiceController(
     @Volatile private var dictationFinished = false
     private var live: LiveConversation? = null
     private var held = false
+    /** The reply read aloud is held up to go on out of sight ([readKeepAlive]). */
+    private var readHeld = false
     /** The room's quiet floor as the chat's last listen over the voice left it, for the next one. */
     private var roomFloor = 0f
     /** Herald went out of sight since the chat started. */
@@ -345,13 +350,14 @@ class VoiceController(
     }
 
     /**
-     * Herald went out of sight. Dictation and Read aloud stop; a voice chat carries on when it's held up, like a
-     * call, and stops otherwise, since Android doesn't let the app listen from the background.
+     * Herald went out of sight. Dictation stops. Read aloud plays on when it's held up, like music, since it only
+     * plays; a voice chat carries on when it's held up, like a call. Either stops otherwise, and a voice chat must,
+     * since Android doesn't let the app listen from the background.
      */
     fun onBackground() {
         away = true
         cancelDictation()
-        stopReading()
+        if (!readHeld) stopReading()
         if (!held) stopChat()
     }
 
@@ -1129,6 +1135,16 @@ class VoiceController(
         val text = readAloudText(reply)
         if (text.isEmpty()) return
         _reading.value = ReadAloudState(key)
+        // Held now, on the tap: Android only lets a playback service start from the foreground.
+        away = false
+        readHeld = readKeepAlive?.hold(
+            onEnd = ::stopReading,
+            onLost = {
+                readHeld = false
+                // Refused after the app already went away: nothing keeps it playing there.
+                if (away) stopReading()
+            },
+        ) == true
         val keptAs = "$gateway\n${profile.orEmpty()}\n$text"
         // Started once it's [readingJob], so its end can tell whether a newer one took over.
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -1137,10 +1153,14 @@ class VoiceController(
                 // The first thing that went wrong says why; what follows from it says less.
                 voice(text, gateway, profile, keptAs) { if (error == null) error = it }
             } finally {
-                // Stopped, or another reply started: that one keeps its own state.
+                // Stopped, or another reply started: that one keeps its own state, and the hold.
                 if (readingJob === coroutineContext.job) {
                     readingJob = null
                     _reading.value = ReadAloudState(error = error)
+                }
+                if (readingJob == null) {
+                    readHeld = false
+                    readKeepAlive?.release()
                 }
             }
         }

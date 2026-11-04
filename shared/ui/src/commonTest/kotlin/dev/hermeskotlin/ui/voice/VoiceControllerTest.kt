@@ -12,6 +12,7 @@ import dev.hermeskotlin.core.settings.DictationEngine
 import dev.hermeskotlin.core.voice.AudioApi
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
+import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.Recording
 import dev.hermeskotlin.core.voice.SpeechPlayer
 import dev.hermeskotlin.core.voice.SpokenAudio
@@ -618,6 +619,81 @@ class VoiceControllerTest {
         assertNull(voice.reading.value.key)
         testScheduler.runCurrent()
         assertEquals(1, player.cut)
+    }
+
+    /** Holds Read aloud up out of sight, as the playback service does; [end] is its notification's Stop. */
+    private class FakeReadKeeper(private val grants: Boolean = true) : ReadAloudKeepAlive {
+        var holds = 0
+        var releases = 0
+        private var onEnd: (() -> Unit)? = null
+        override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean {
+            holds++
+            this.onEnd = onEnd
+            return grants
+        }
+
+        override fun release() {
+            releases++
+            onEnd = null
+        }
+
+        fun end() = onEnd?.invoke()
+    }
+
+    /** Read aloud only plays, so held up it goes on when the app goes out of sight, and lets go once it's done. */
+    @Test
+    fun aReplyReadAloudPlaysOnOutOfSight() = runTest {
+        val player = HeldPlayer()
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        voice.onBackground()
+
+        assertEquals(ReadAloudState("r1"), voice.reading.value)
+        voice.reading.first { it.key == null }
+        assertEquals(listOf("A long reply."), player.played)
+        assertEquals(1, keeper.holds)
+        assertEquals(1, keeper.releases)
+    }
+
+    /** Without a hold (none here, or the platform refused it), it stops with the app, as before. */
+    @Test
+    fun aReplyReadAloudWithoutAHoldStopsOutOfSight() = runTest {
+        val player = HeldPlayer(holds = true)
+        val voice = VoiceController(
+            voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope,
+            readKeepAlive = FakeReadKeeper(grants = false),
+        )
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        player.started.receive()
+        voice.onBackground()
+
+        assertNull(voice.reading.value.key)
+        testScheduler.runCurrent()
+        assertEquals(1, player.cut)
+    }
+
+    /** The notification's Stop ends the reading and lets the hold go; a newer reply keeps the hold the first had. */
+    @Test
+    fun theNotificationsStopEndsTheReadingAndANewerReplyKeepsTheHold() = runTest {
+        val player = HeldPlayer(holds = true)
+        val keeper = FakeReadKeeper()
+        val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = keeper)
+
+        voice.readAloud("r1", "The first reply.", gateway, null)
+        player.started.receive()
+        voice.readAloud("r2", "The second reply.", gateway, null)
+        player.started.receive()
+        testScheduler.runCurrent()
+        assertEquals(0, keeper.releases)
+
+        keeper.end()
+        testScheduler.runCurrent()
+        assertNull(voice.reading.value.key)
+        assertEquals(2, player.cut)
+        assertEquals(1, keeper.releases)
     }
 
     @Test

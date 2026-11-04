@@ -14,3 +14,9 @@ interface VoiceKeepAlive {
 
     fun release()
 }
+
+/**
+ * Keeps a reply being read aloud going while Herald is out of sight, the way music plays on. On Android, a media
+ * playback foreground service with an ongoing notification whose Stop ([VoiceKeepAlive.hold]'s onEnd) ends it.
+ */
+interface ReadAloudKeepAlive : VoiceKeepAlive
