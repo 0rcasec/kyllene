@@ -214,6 +214,11 @@ class VoiceController(
     private var cantListenOver = false
     /** The last hold was one nobody talked through, the voice's own echo or a knock ([heardOver]). */
     private var echoHeld = false
+    /**
+     * Holds nobody talked through in this turn's reply, streamed or read out after (#264); counted for the turn, so a
+     * reply that moves from the speech socket to being read out doesn't start over.
+     */
+    private var echoHolds = 0
 
     /** The chained chat running, whose microphone Mute holds shut; null outside one. */
     private var chained: Job? = null
@@ -482,6 +487,7 @@ class VoiceController(
         voicedSoFar = ""
         voicedUntilAsked = false
         voiced = ""
+        echoHolds = 0
         val cut = coroutineScope {
             // The speech socket opens while the prompt goes out, so the first words don't wait for it.
             val opening = async { openSpeech(gateway, profile) }
@@ -545,11 +551,10 @@ class VoiceController(
     ): Cut<T> = coroutineScope {
         val done = async { work() }
         var cut: Cut<T>? = null
-        // Holds where nobody went on talking: a speaker turned right up, its echo over every bar (#264).
-        var echoes = 0
         while (cut == null) {
-            // Past a few, it's the speaker, not a knock: the rest of this reply plays through, without the microphone.
-            if (echoes >= MAX_ECHO_HOLDS) {
+            // Past a few holds where nobody went on talking, it's a speaker turned right up, its echo over every bar,
+            // not a knock: the rest of this reply plays through, without the microphone (#264).
+            if (echoHolds >= MAX_ECHO_HOLDS) {
                 cut = Cut.Done(done.await())
                 continue
             }
@@ -568,7 +573,7 @@ class VoiceController(
             // Null when it was its own voice, or a knock: the voice went on where it held; listen again.
             cut = if (someone) {
                 echoHeld = false
-                heardOver(session, gateway, profile, done, over)?.let { Cut.Over(it) }.also { if (it == null && echoHeld) echoes++ }
+                heardOver(session, gateway, profile, done, over)?.let { Cut.Over(it) }.also { if (it == null && echoHeld) echoHolds++ }
             } else {
                 Cut.Done(done.await())
             }

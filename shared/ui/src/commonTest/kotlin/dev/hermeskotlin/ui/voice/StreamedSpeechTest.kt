@@ -640,6 +640,35 @@ class StreamedSpeechTest {
         setup.voice.stopChat()
     }
 
+    /**
+     * Two echo holds while the reply was streamed, then the socket dropped and the finished reply is read out: still
+     * the same reply, so the read-out plays through without the microphone, not starting the count over.
+     */
+    @Test
+    fun theEchoCountLastsTheWholeReplyWhenItMovesToBeingReadOut() = runTest {
+        val recorder = Echoes(times = 3)
+        val stream = Stream()
+        val player = Player(canHold = true)
+        val setup = chat(player = player, recorder = recorder, transcripts = listOf("How was your day?", "")) { stream }
+
+        setup.socket.event("message.start")
+        setup.socket.event("message.delta", """{"text":"It was a long day. "}""")
+        stream.appended.first { it.isNotEmpty() }
+        stream.gateway.send(SpeechStreamEvent.Start(sampleRate = 24_000))
+        stream.gateway.send(SpeechStreamEvent.Audio(byteArrayOf(1, 0, 2, 0)))
+        recorder.listening.first { it >= 2 }
+        advanceTimeBy(1_000)
+        assertEquals(2, recorder.listening.value)
+        // The socket drops; the rest is read out once the reply is done.
+        stream.gateway.close()
+        setup.socket.event("message.delta", """{"text":"First the meeting ran over."}""")
+        setup.socket.event("message.complete", """{"text":"It was a long day. First the meeting ran over.","status":"complete"}""")
+
+        setup.voice.chat.first { it.phase == VoicePhase.Listening && setup.spoken.isNotEmpty() }
+        assertEquals(2, recorder.listening.value)
+        setup.voice.stopChat()
+    }
+
     /** A quick "stop" can be over before the voice held; it's still heard, and ends the chat. */
     @Test
     fun aQuickStopOverBeforeTheVoiceHeldStillEndsTheChat() = runTest {
