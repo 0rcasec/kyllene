@@ -258,6 +258,8 @@ class VoiceController(
         stoppedByUser = false
         roomFloor = 0f
         noSpeechStream = null
+        // A new chat listens over its replies afresh, even one that starts by answering a question already asked.
+        echoHolds = 0
         // Held now, on the tap: Android only lets the microphone go to the background from the foreground.
         away = false
         held = keepAlive?.hold(
@@ -1127,7 +1129,7 @@ class VoiceController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                progress?.pieceFails()
+                progress?.pieceFails(chunk.length)
                 onError(e.message ?: getString(Res.string.voice_error_play_reply))
             } finally {
                 playing.value = false
@@ -1172,6 +1174,12 @@ class VoiceController(
                 // The first thing that went wrong says why; what follows from it says less.
                 voice(text, gateway, profile, keptAs, progress) { if (error == null) error = it }
             } finally {
+                // Ended by itself while paused (the next piece couldn't be voiced, say): its pause is still its own,
+                // since one stopped or replaced was let go already (letGo), so it lets go of it here.
+                if (read.paused) {
+                    read.paused = false
+                    player.hold(false)
+                }
                 // Stopped, or another reply started: that one keeps its own state, and the hold.
                 if (readingJob === coroutineContext.job) {
                     readingJob = null
@@ -1202,9 +1210,10 @@ class VoiceController(
     }
 
     /**
-     * Lets go of reading [read], no longer wanted: its [job] is cancelled, which stops its voice at once, and a pause
-     * it held is let go here and now, so a newer voice doesn't wait on it. Never later, from its job's end, which can
-     * come after a newer reading was paused in turn.
+     * Lets go of reading [read], no longer wanted: its [job] is cancelled (the player stops a clip as its play is
+     * cancelled, and forgets it), and a pause it held is let go here and now, so a newer voice doesn't wait on it.
+     * Not from its job's end, which can come after a newer reading was paused in turn: marked let go here, that end
+     * leaves the player alone.
      */
     private fun letGo(job: Job?, read: Reading?) {
         job?.cancel()

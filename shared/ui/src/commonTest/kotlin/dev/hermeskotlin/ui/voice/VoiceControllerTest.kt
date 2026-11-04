@@ -665,7 +665,7 @@ class VoiceControllerTest {
     }
 
     /**
-     * [HeldPlayer] whose voice pauses ([SpeechPlayer.hold]), as the phone's does; [holds] says how it was held.
+     * [HeldPlayer] that records how it was held ([SpeechPlayer.hold]) in [holds]; it doesn't pause anything itself.
      * [stopsAfterMs]: a clip cut off takes that long to finish stopping, so the reading's end comes late.
      */
     private class PausablePlayer(val inner: HeldPlayer, private val stopsAfterMs: Long = 0) : SpeechPlayer by inner {
@@ -685,8 +685,29 @@ class VoiceControllerTest {
         }
     }
 
+    /**
+     * Paused while its first piece was being voiced, and then the voice failed: the reading ends by itself, and lets
+     * go of its pause, so the next voice on the shared player isn't left waiting.
+     */
+    @Test
+    fun aPausedReadingThatFailsLetsGoOfItsPause() = runTest {
+        val player = PausablePlayer(HeldPlayer())
+        val voice = VoiceController(
+            voiced(mutableListOf(), failure = "No TTS provider is configured."), FakeRecorder(), player, backgroundScope, backgroundScope,
+            readKeepAlive = FakeReadKeeper(),
+        )
+
+        voice.readAloud("r1", "A long reply.", gateway, null)
+        voice.pauseReading(true)
+        val ended = voice.reading.first { it.key == null }
+
+        assertEquals("No TTS provider is configured.", ended.error)
+        assertEquals(listOf(true, false), player.holds)
+    }
+
     /** A paused reading the newer one replaced lets go of its pause at once, not when its end comes, late. */
     @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun aPausedNewerReadingStaysPausedWhenTheOldOnesEndComesLate() = runTest {
         val player = PausablePlayer(HeldPlayer(holds = true), stopsAfterMs = 500)
         val voice = VoiceController(voiced(mutableListOf()), FakeRecorder(), player, backgroundScope, backgroundScope, readKeepAlive = FakeReadKeeper())
@@ -710,6 +731,7 @@ class VoiceControllerTest {
      * called from no coroutine): a newer reply still takes over the hold rather than letting it go and taking it anew.
      */
     @Test
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun aNewerReplyKeepsTheHoldWhenTheOldOneEndsAtOnce() = runTest {
         val player = HeldPlayer(holds = true)
         val keeper = FakeReadKeeper()

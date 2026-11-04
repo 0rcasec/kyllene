@@ -19,18 +19,21 @@ internal class ReadAloudProgress(
 ) {
     private var playedMs = 0L
     private var playedChars = 0
+    /** Time spent on pieces that couldn't play: shown as passed, but not taken for the pace. */
+    private var lostMs = 0L
+    private var lostChars = 0
     /** The piece sounding now: what of it played before the last pause, and since when it plays again. */
     private var pieceMs = 0L
     private var since: TimeMark? = null
     private var paused = false
     private var waiting = true
 
-    val positionMs: Long get() = playedMs + pieceMs + (since?.elapsedNow()?.inWholeMilliseconds ?: 0L)
+    val positionMs: Long get() = playedMs + lostMs + pieceMs + (since?.elapsedNow()?.inWholeMilliseconds ?: 0L)
 
     val durationMs: Long
         get() {
             val msPerChar = if (playedChars > 0 && playedMs > 0) playedMs.toDouble() / playedChars else 1000.0 / CHARS_PER_SECOND
-            return maxOf(positionMs, playedMs + ((chars - playedChars).coerceAtLeast(0) * msPerChar).toLong())
+            return maxOf(positionMs, playedMs + lostMs + ((chars - playedChars - lostChars).coerceAtLeast(0) * msPerChar).toLong())
         }
 
     /** A piece starts to play (or waits for the pause to end). */
@@ -51,9 +54,14 @@ internal class ReadAloudProgress(
         publish()
     }
 
-    /** The piece couldn't play: its time isn't counted, and the bar waits for the next one where it was. */
-    fun pieceFails() {
-        since = null
+    /**
+     * The piece of [chars] characters couldn't play: the bar stays where it got to (it never goes back) and waits
+     * for the next piece, and the pace is still taken only from pieces that played.
+     */
+    fun pieceFails(chars: Int) {
+        stopClock()
+        lostMs += pieceMs
+        lostChars += chars
         pieceMs = 0L
         waiting = true
         publish()
