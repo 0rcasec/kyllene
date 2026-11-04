@@ -19,6 +19,8 @@ import dev.hermeskotlin.core.voice.BargeIn
 import dev.hermeskotlin.core.voice.BargeInSettings
 import dev.hermeskotlin.core.voice.DeviceDictation
 import dev.hermeskotlin.core.voice.DeviceDictationUnavailable
+import dev.hermeskotlin.core.voice.FocusChange
+import dev.hermeskotlin.core.voice.FocusGrant
 import dev.hermeskotlin.core.voice.LiveCalls
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.ReadAloudVoices
@@ -1151,6 +1153,10 @@ class VoiceController(
         val replaced = readingJob
         val replacedRead = readNow
         _reading.value = ReadAloudState(key)
+        val progress = ReadAloudProgress(ReadAloudProgress.title(text), speechChunks(text).sumOf { it.length }, time) { media ->
+            readKeepAlive?.show(media)
+        }
+        val read = Reading(progress)
         // Held now, on the tap: Android only lets a playback service start from the foreground.
         away = false
         readHeld = readKeepAlive?.hold(
@@ -1161,11 +1167,8 @@ class VoiceController(
                 if (away) stopReading()
             },
             onPause = ::pauseReading,
+            onFocus = { focusChanged(read, it) },
         ) == true
-        val progress = ReadAloudProgress(ReadAloudProgress.title(text), speechChunks(text).sumOf { it.length }, time) { media ->
-            readKeepAlive?.show(media)
-        }
-        val read = Reading(progress)
         val keptAs = "$gateway\n${profile.orEmpty()}\n$text"
         // Started once it's [readingJob], so its end can tell whether a newer one took over.
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -1174,12 +1177,9 @@ class VoiceController(
                 // The first thing that went wrong says why; what follows from it says less.
                 voice(text, gateway, profile, keptAs, progress) { if (error == null) error = it }
             } finally {
-                // Ended by itself while paused (the next piece couldn't be voiced, say): its pause is still its own,
+                // Ended by itself while held (the next piece couldn't be voiced, say): the hold is still its own,
                 // since one stopped or replaced was let go already (letGo), so it lets go of it here.
-                if (read.paused) {
-                    read.paused = false
-                    player.hold(false)
-                }
+                letGoOfPlayer(read)
                 // Stopped, or another reply started: that one keeps its own state, and the hold.
                 if (readingJob === coroutineContext.job) {
                     readingJob = null
@@ -1195,7 +1195,9 @@ class VoiceController(
         readingJob = job
         readNow = read
         letGo(replaced, replacedRead)
-        progress.publish()
+        // Asked before the first piece exists: without the focus the player is held first, so that piece waits.
+        askFocus(read)
+        apply(read)
         job.start()
     }
 
@@ -1211,16 +1213,22 @@ class VoiceController(
 
     /**
      * Lets go of reading [read], no longer wanted: its [job] is cancelled (the player stops a clip as its play is
-     * cancelled, and forgets it), and a pause it held is let go here and now, so a newer voice doesn't wait on it.
-     * Not from its job's end, which can come after a newer reading was paused in turn: marked let go here, that end
-     * leaves the player alone.
+     * cancelled, and forgets it), and a hold or a duck it had is let go here and now, so a newer voice doesn't wait
+     * on it. Not from its job's end, which can come after a newer reading was held in turn: marked let go here, that
+     * end leaves the player alone.
      */
     private fun letGo(job: Job?, read: Reading?) {
         job?.cancel()
-        if (read?.paused == true) {
-            read.paused = false
+        read?.let(::letGoOfPlayer)
+    }
+
+    /** What [read] did to the shared player, undone: once, by whichever of its let go and its end comes first. */
+    private fun letGoOfPlayer(read: Reading) {
+        if (read.held) {
+            read.held = false
             player.hold(false)
         }
+        duck(read, false)
     }
 
     /**
@@ -1234,20 +1242,92 @@ class VoiceController(
 
     /**
      * Pauses the reply being read aloud where it is ([on]), mid-word, or plays it on from there; from the media
-     * controls. A piece voiced meanwhile waits for it.
+     * controls or the chat. A piece voiced meanwhile waits for it. A pause lets the audio focus go, so other apps'
+     * sound comes back; playing on asks for it again, and plays once it's given.
      */
     fun pauseReading(on: Boolean) {
         val read = readNow ?: return
-        if (read.paused == on) return
-        read.paused = on
-        player.hold(on)
-        read.progress.pause(on)
-        _reading.update { it.copy(paused = on) }
+        // The same word twice (a headset and the screen): already done.
+        if (read.wanted == !on) return
+        read.wanted = !on
+        if (on) {
+            read.allowed = false
+            readKeepAlive?.unfocus()
+        } else {
+            askFocus(read)
+        }
+        apply(read)
     }
 
-    /** A reply being read aloud: where it is, and whether it's paused. */
+    /** Asks for the audio focus for [read]: a refusal leaves it paused, so Play asks again. */
+    private fun askFocus(read: Reading) {
+        when (readKeepAlive?.focus() ?: FocusGrant.Granted) {
+            FocusGrant.Granted -> {
+                read.allowed = true
+                duck(read, false)
+            }
+            // A call, say: it plays once the call ends (FocusChange.Gain), unless the person pauses it meanwhile.
+            FocusGrant.Delayed -> read.allowed = false
+            FocusGrant.Refused -> {
+                read.allowed = false
+                read.wanted = false
+            }
+        }
+    }
+
+    /** What became of the audio focus [read] asked for; nothing once it's let go. */
+    private fun focusChanged(read: Reading, change: FocusChange) {
+        if (readNow !== read) return
+        when (change) {
+            FocusChange.Gain -> {
+                read.allowed = true
+                duck(read, false)
+            }
+            FocusChange.LossForNow -> read.allowed = false
+            FocusChange.Loss -> {
+                read.allowed = false
+                read.wanted = false
+                readKeepAlive?.unfocus()
+            }
+            // A notification sound or a navigation prompt: it reads on, quieter, under it.
+            FocusChange.Duck -> return duck(read, true)
+        }
+        apply(read)
+    }
+
+    private fun duck(read: Reading, on: Boolean) {
+        if (read.ducked == on) return
+        read.ducked = on
+        player.duck(on)
+    }
+
+    /**
+     * The player is held for [read] exactly when the person paused it or it hasn't the focus; the chat and the media
+     * controls show what the person wants, with the bar still while it waits for the focus.
+     */
+    private fun apply(read: Reading) {
+        val hold = !(read.wanted && read.allowed)
+        if (hold != read.held) {
+            read.held = hold
+            player.hold(hold)
+        }
+        read.progress.hold(hold, read.wanted)
+        _reading.update { it.copy(paused = !read.wanted) }
+    }
+
+    /**
+     * A reply being read aloud. The player is held for it unless the person wants it ([wanted]) and the audio focus
+     * lets it ([allowed]); both are written only by their own inputs, and the hold derived from them ([apply]).
+     */
     private class Reading(val progress: ReadAloudProgress) {
-        var paused = false
+        /** The person's last word: Play (a reading starting counts as one) or Pause. */
+        var wanted = true
+        /** The phone's audio focus lets it sound. */
+        var allowed = false
+        /** The shared player is held for it: undone once, when it's let go or ends. */
+        var held = false
+        /** The shared player is lowered for it, under a passing sound. */
+        var ducked = false
     }
 
     fun dismissReadAloudError() = _reading.update { it.copy(error = null) }

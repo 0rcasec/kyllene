@@ -179,6 +179,12 @@ interface SpeechPlayer {
     fun hold(on: Boolean): Boolean = false
 
     /**
+     * Lowers the voice ([on]) under another app's passing sound, or puts it back; what starts meanwhile starts
+     * lowered. A player that can't plays on as it was.
+     */
+    fun duck(on: Boolean) = Unit
+
+    /**
      * Plays 16-bit little-endian PCM at [sampleRate], [channels] interleaved, as [chunks] arrive, until the
      * channel is closed and all of it has played; cancelling stops it at once. [onSound] says when sound starts
      * coming out, and when it has stopped for a moment, as it does while the agent works between sentences.

@@ -281,6 +281,8 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
     private var track: AudioTrack? = null
     /** A clip once it's ready to play. */
     private var clip: MediaPlayer? = null
+    /** Lowered under another app's passing sound ([duck]), or full. */
+    private var volume = 1f
 
     /**
      * A chained chat on the phone's own speaker uses call routing, so the phone's echo cancelling keeps the voice out
@@ -350,6 +352,15 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
         return true
     }
 
+    /** Android lowers music under a passing sound itself, but leaves speech to the app; this is that. */
+    override fun duck(on: Boolean) {
+        synchronized(lock) {
+            volume = if (on) DUCKED else 1f
+            track?.let { runCatching { it.setVolume(volume) } }
+            clip?.let { runCatching { it.setVolume(volume, volume) } }
+        }
+    }
+
     override suspend fun playPcm(sampleRate: Int, channels: Int, chunks: ReceiveChannel<ByteArray>, onSound: (Boolean) -> Unit) = coroutineScope {
         val mask = when (channels) {
             1 -> AudioFormat.CHANNEL_OUT_MONO
@@ -404,6 +415,7 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
             withContext(Dispatchers.IO) {
                 synchronized(lock) {
                     this@AndroidSpeechPlayer.track = track
+                    runCatching { track.setVolume(volume) }
                     // Held, it fills its buffer and waits to be let go.
                     if (!holding) track.play()
                 }
@@ -482,6 +494,7 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
                 player.setOnPreparedListener {
                     synchronized(lock) {
                         clip = it
+                        it.setVolume(volume, volume)
                         if (!holding) it.start()
                     }
                 }
@@ -516,5 +529,7 @@ class AndroidSpeechPlayer(private val context: Context) : SpeechPlayer {
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_HEARING_AID,
             AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER, AudioDeviceInfo.TYPE_BLE_BROADCAST,
         )
+        /** Ducked, about a fifth of the voice, as podcast apps duck under a navigation prompt. */
+        const val DUCKED = 0.2f
     }
 }

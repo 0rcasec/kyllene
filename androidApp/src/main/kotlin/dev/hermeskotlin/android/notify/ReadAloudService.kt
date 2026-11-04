@@ -23,7 +23,8 @@ import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dev.hermeskotlin.android.R
-import dev.hermeskotlin.core.voice.ReadAloudFocus
+import dev.hermeskotlin.core.voice.FocusChange
+import dev.hermeskotlin.core.voice.FocusGrant
 import dev.hermeskotlin.core.voice.ReadAloudKeepAlive
 import dev.hermeskotlin.core.voice.ReadAloudMedia
 import org.koin.android.ext.android.inject
@@ -39,12 +40,10 @@ class ReadAloudService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> {
-                keeper.end()
-                return START_NOT_STICKY
-            }
-            ACTION_PAUSE, ACTION_PLAY -> {
-                keeper.pause(intent.action == ACTION_PAUSE)
+            ACTION_STOP, ACTION_PAUSE, ACTION_PLAY -> {
+                if (intent.action == ACTION_STOP) keeper.end() else keeper.pause(intent.action == ACTION_PAUSE)
+                // A late notification button started it afresh, with nothing to read: it doesn't stay behind.
+                if (!keeper.inForeground()) stopSelf(startId)
                 return START_NOT_STICKY
             }
         }
@@ -86,8 +85,9 @@ class ReadAloudService : Service() {
 /**
  * [ReadAloudKeepAlive] on Android: holds [ReadAloudService] up while a reply is read aloud, with a media session, so
  * the reading shows in the phone's media controls (Quick Settings, the lock screen) and a headset's or a car's
- * play/pause buttons pause it. No seeking: the pieces ahead aren't voiced yet. It plays only with the audio focus
- * ([ReadAloudFocus]: music ducks under it; a call or a navigation prompt pauses it until it ends) and keeps the CPU
+ * play/pause buttons pause it. No seeking: the pieces ahead aren't voiced yet. It answers the reading's asks for the
+ * audio focus at once ([focus]) and tells that reading, and only it, what becomes of the focus; the reading decides
+ * (music ducks under it, a call holds it until it ends, a passing sound plays over it lowered). It keeps the CPU
  * awake through the gaps while the next piece is voiced. All on the main thread, as the service's, the session's
  * and the focus callbacks and Read aloud are.
  */
@@ -96,6 +96,10 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
     private var onEnd: (() -> Unit)? = null
     private var onLost: (() -> Unit)? = null
     private var onPause: ((Boolean) -> Unit)? = null
+    /** The reading held now, told what becomes of the focus it asked for. */
+    private var onFocus: ((FocusChange) -> Unit)? = null
+    /** A focus request is registered with the platform, given or not yet. */
+    private var asked = false
     /** A reply being read holds it. */
     private var wanted = false
     /** The service is in the foreground, so it may be stopped. */
@@ -104,7 +108,6 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
     private var session: MediaSession? = null
     /** What the media controls show now. */
     private var media: ReadAloudMedia? = null
-    private val main = Handler(Looper.getMainLooper())
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         .setAudioAttributes(
@@ -112,31 +115,21 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         )
         // During a call the focus can come later; it plays then.
         .setAcceptsDelayedFocusGain(true)
-        .setOnAudioFocusChangeListener(::onFocus, main)
+        // On the main thread, as everything else here: a change is told to the reading held when it arrives.
+        .setOnAudioFocusChangeListener(::focusChanged, Handler(Looper.getMainLooper()))
         .build()
-    private val focus = ReadAloudFocus(
-        request = {
-            when (audioManager.requestAudioFocus(focusRequest)) {
-                AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> ReadAloudFocus.Grant.Granted
-                AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> ReadAloudFocus.Grant.Delayed
-                else -> ReadAloudFocus.Grant.Refused
-            }
-        },
-        abandon = { audioManager.abandonAudioFocusRequest(focusRequest) },
-        pause = ::pauseForFocus,
-    )
-    /** The focus is pausing or playing the reading: what [show] hears meanwhile isn't the person's doing. */
-    private var focusing = false
     private val wake = context.getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Kyllene:ReadAloud")
         .apply { setReferenceCounted(false) }
 
-    override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean = hold(onEnd, onLost) {}
+    override fun hold(onEnd: () -> Unit, onLost: () -> Unit): Boolean = hold(onEnd, onLost, {}, {})
 
-    override fun hold(onEnd: () -> Unit, onLost: () -> Unit, onPause: (Boolean) -> Unit): Boolean = try {
+    override fun hold(onEnd: () -> Unit, onLost: () -> Unit, onPause: (Boolean) -> Unit, onFocus: (FocusChange) -> Unit): Boolean = try {
         this.onEnd = onEnd
         this.onLost = onLost
         this.onPause = onPause
+        // A newer reading takes the focus's word from here; the one it replaced hears nothing more.
+        this.onFocus = onFocus
         wanted = true
         // A newer reply takes over the session the last one had.
         if (session == null) session = openSession()
@@ -178,8 +171,6 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         )
         // Pause turns to Play in the notification (newer Androids draw their controls from the session itself).
         if (foreground && was?.playing != media.playing) notifications.postReadingAloud(notification())
-        // The person's Play or Pause, from wherever (the controls, the notification, the chat), or a reading starting.
-        if (!focusing && was?.playing != media.playing) focus.wants(media.playing)
         // Renewed with each piece: a reading that stalls lets the CPU sleep after a while, though it stays held up.
         if (media.playing) wake.acquire(WAKE_MS) else if (wake.isHeld) wake.release()
     }
@@ -202,11 +193,28 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         )
     }
 
+    override fun focus(): FocusGrant {
+        // Nothing held (the service was refused): it plays as it would without the focus.
+        if (onFocus == null) return FocusGrant.Granted
+        return when (audioManager.requestAudioFocus(focusRequest)) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> FocusGrant.Granted.also { asked = true }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> FocusGrant.Delayed.also { asked = true }
+            else -> FocusGrant.Refused
+        }
+    }
+
+    override fun unfocus() {
+        if (asked) audioManager.abandonAudioFocusRequest(focusRequest)
+        asked = false
+    }
+
     /** The service is in the foreground; false when the reading ended meanwhile, so it should stop. */
     internal fun started(): Boolean {
         foreground = wanted
         return wanted
     }
+
+    internal fun inForeground(): Boolean = foreground
 
     internal fun stopped() {
         foreground = false
@@ -247,25 +255,15 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         isActive = true
     }
 
-    /** The focus's own pause or play, posted: it's asked for from inside [show], while the reading is shown. */
-    private fun pauseForFocus(on: Boolean) {
-        main.post {
-            focusing = true
-            try {
-                onPause?.invoke(on)
-            } finally {
-                focusing = false
-            }
-        }
-    }
-
-    private fun onFocus(change: Int) {
+    private fun focusChanged(change: Int) {
+        val tell = onFocus ?: return
         when (change) {
-            AudioManager.AUDIOFOCUS_GAIN -> focus.changed(ReadAloudFocus.Change.Gain)
-            AudioManager.AUDIOFOCUS_LOSS -> focus.changed(ReadAloudFocus.Change.Loss)
-            // A navigation prompt as much as a call: Android doesn't lower speech under another voice, so it pauses.
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
-                focus.changed(ReadAloudFocus.Change.LossTransient)
+            // Only for a request still registered: one let go hears nothing more.
+            AudioManager.AUDIOFOCUS_GAIN -> if (asked) tell(FocusChange.Gain)
+            AudioManager.AUDIOFOCUS_LOSS -> tell(FocusChange.Loss)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> tell(FocusChange.LossForNow)
+            // A notification sound or a navigation prompt: Android lowers music under it itself, but tells speech.
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> tell(FocusChange.Duck)
         }
     }
 
@@ -278,8 +276,9 @@ class ReadAloudKeeper(private val context: Context, private val notifications: C
         onEnd = null
         onLost = null
         onPause = null
+        onFocus = null
         media = null
-        focus.reset()
+        unfocus()
         if (wake.isHeld) wake.release()
         session?.run {
             isActive = false

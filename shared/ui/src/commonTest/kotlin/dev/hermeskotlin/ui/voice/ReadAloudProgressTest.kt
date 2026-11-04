@@ -41,11 +41,11 @@ class ReadAloudProgressTest {
         val read = progress(chars = 140)
         read.pieceStarts()
         time += 2.seconds
-        read.pause(true)
+        read.hold(true, wanted = false)
         assertFalse(shown.last().playing)
         time += 30.seconds
         assertEquals(2_000L, read.positionMs)
-        read.pause(false)
+        read.hold(false, wanted = true)
         time += 1.seconds
         read.pieceEnds(70)
         assertEquals(3_000L, read.positionMs)
@@ -58,15 +58,35 @@ class ReadAloudProgressTest {
     @Test
     fun aPieceThatStartsPausedStartsCountingOnPlay() {
         val read = progress(chars = 140)
-        read.pause(true)
+        read.hold(true, wanted = false)
         read.pieceStarts()
         time += 10.seconds
         assertEquals(0L, read.positionMs)
-        read.pause(false)
+        read.hold(false, wanted = true)
         time += 500.milliseconds
         assertEquals(500L, read.positionMs)
         assertTrue(shown.last().playing)
         assertFalse(shown.last().waiting)
+    }
+
+    /**
+     * Held for the audio focus (a call) while the person still wants it: the controls show it playing, so Pause is
+     * there to press, with the bar still, and the time held isn't played time.
+     */
+    @Test
+    fun heldForTheFocusShowsPlayingWithTheBarStill() {
+        val read = progress(chars = 140)
+        read.pieceStarts()
+        time += 2.seconds
+        read.hold(true, wanted = true)
+        assertTrue(shown.last().playing)
+        assertTrue(shown.last().waiting)
+        time += 30.seconds
+        assertEquals(2_000L, read.positionMs)
+        read.hold(false, wanted = true)
+        assertFalse(shown.last().waiting)
+        time += 1.seconds
+        assertEquals(3_000L, read.positionMs)
     }
 
     /** A piece that couldn't play: the bar stays where it got to, never back, and the pace isn't taken from it. */

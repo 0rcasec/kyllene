@@ -6,8 +6,8 @@ import kotlin.time.TimeSource
 
 /**
  * Where a reply read aloud is, for the media controls: the pieces played by their real length, the rest estimated
- * at the pace so far, or at [CHARS_PER_SECOND] before any piece has played. Time paused, or waiting for a piece to
- * be voiced, isn't counted; a piece's time includes the moment its player takes to get ready. It's an estimate
+ * at the pace so far, or at [CHARS_PER_SECOND] before any piece has played. Time held (paused, or waiting for the
+ * audio focus), or waiting for a piece to be voiced, isn't counted; a piece's time includes the moment its player takes to get ready. It's an estimate
  * throughout: later pieces don't exist yet. Each change goes to [show].
  */
 internal class ReadAloudProgress(
@@ -25,7 +25,10 @@ internal class ReadAloudProgress(
     /** The piece sounding now: what of it played before the last pause, and since when it plays again. */
     private var pieceMs = 0L
     private var since: TimeMark? = null
-    private var paused = false
+    /** The player is held: paused by the person, or waiting for the audio focus. */
+    private var held = false
+    /** The person wants it playing, so the controls show it playing, with the bar still while it's held. */
+    private var wanted = true
     private var waiting = true
 
     val positionMs: Long get() = playedMs + lostMs + pieceMs + (since?.elapsedNow()?.inWholeMilliseconds ?: 0L)
@@ -40,7 +43,7 @@ internal class ReadAloudProgress(
     fun pieceStarts() {
         pieceMs = 0L
         waiting = false
-        since = if (paused) null else time.markNow()
+        since = if (held) null else time.markNow()
         publish()
     }
 
@@ -67,14 +70,18 @@ internal class ReadAloudProgress(
         publish()
     }
 
-    fun pause(on: Boolean) {
-        if (on == paused) return
-        if (on) stopClock() else if (!waiting) since = time.markNow()
-        paused = on
+    /** The player is held ([on]) or plays; [wanted]: the person wants it playing, held or not. */
+    fun hold(on: Boolean, wanted: Boolean) {
+        if (on == held && wanted == this.wanted) return
+        if (on != held) if (on) stopClock() else if (!waiting) since = time.markNow()
+        held = on
+        this.wanted = wanted
         publish()
     }
 
-    fun publish() = show(ReadAloudMedia(title, playing = !paused, waiting = waiting, positionMs = positionMs, durationMs = durationMs))
+    fun publish() = show(
+        ReadAloudMedia(title, playing = wanted, waiting = waiting || held, positionMs = positionMs, durationMs = durationMs),
+    )
 
     private fun stopClock() {
         since?.let { pieceMs += it.elapsedNow().inWholeMilliseconds }
